@@ -3617,6 +3617,7 @@ version = "0.1.0"
 dependencies = [
  "blockifier",
  "cairo-lang-starknet-classes",
+ "log",
  "rpc-client",
  "rstest 0.18.2",
  "serde",
