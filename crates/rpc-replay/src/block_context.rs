@@ -1,4 +1,6 @@
+use std::env;
 use std::num::NonZeroU128;
+use std::path::Path;
 
 use blockifier::blockifier::block::{BlockInfo, GasPrices};
 use blockifier::bouncer::BouncerConfig;
@@ -62,10 +64,25 @@ pub fn build_block_context(
         },
     };
 
-    let versioned_constants = VersionedConstants::get(starknet_version);
+    // let versioned_constants = VersionedConstants::get(starknet_version);
+
+    // Check for custom versioned constants path
+    let versioned_constants = if let Ok(path) = env::var("SNOS_BLOCKIFIER_VERSIONED_CONSTANTS_PATH") {
+        log::info!("Loading versioned constants from path: {}", path);
+        // Try to load versioned constants from the specified JSON file
+        VersionedConstants::try_from(Path::new(&path)).map_err(|e| {
+            log::error!("Failed to load versioned constants from file {}, {}", path, e);
+            FeltConversionError::CustomError(format!("Failed to load versioned constants from file: {}", e))
+        })?
+    } else {
+        log::info!("Env for versioned constants not set. Using default values");
+        // Use the default versioned constants from the library
+        VersionedConstants::get(starknet_version).clone()
+    };
+
     let bouncer_config = BouncerConfig::max();
 
-    Ok(BlockContext::new(block_info, chain_info, versioned_constants.clone(), bouncer_config))
+    Ok(BlockContext::new(block_info, chain_info, versioned_constants, bouncer_config))
 }
 
 #[cfg(test)]
