@@ -43,6 +43,6 @@ async fn main() {
     pie.run_validity_checks().expect("Valid PIE");
 
     if let Some(output_path) = args.output {
-        pie.write_zip_file(&output_path).expect("Should write file to output path");
+        pie.write_zip_file(&output_path, true).expect("Should write file to output path");
     }
 }

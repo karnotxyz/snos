@@ -1109,7 +1109,7 @@ dependencies = [
 [[package]]
 name = "cairo-vm"
 version = "1.0.1"
-source = "git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo#1fa902bafae507424b5ea83a625830ffe6b0eca5"
+source = "git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2#518b46879861b90fbbaa0a2d1fce8d8035f83a8e"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -1150,7 +1150,7 @@ dependencies = [
  "blockifier",
  "cairo-lang-starknet-classes",
  "cairo-lang-utils",
- "cairo-vm 1.0.1 (git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo)",
+ "cairo-vm 1.0.1 (git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2)",
  "clap",
  "env_logger",
  "futures-core",
@@ -2070,7 +2070,7 @@ name = "hint_tool"
 version = "0.1.0"
 dependencies = [
  "blockifier",
- "cairo-vm 1.0.1 (git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo)",
+ "cairo-vm 1.0.1 (git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2)",
  "clap",
  "serde",
  "serde_json",
@@ -2933,7 +2933,7 @@ dependencies = [
  "blockifier",
  "cairo-lang-starknet-classes",
  "cairo-lang-utils",
- "cairo-vm 1.0.1 (git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo)",
+ "cairo-vm 1.0.1 (git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2)",
  "clap",
  "env_logger",
  "futures-core",
@@ -3274,7 +3274,7 @@ dependencies = [
  "blockifier",
  "cairo-lang-starknet-classes",
  "cairo-lang-utils",
- "cairo-vm 1.0.1 (git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo)",
+ "cairo-vm 1.0.1 (git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2)",
  "clap",
  "env_logger",
  "futures-core",
@@ -4465,7 +4465,7 @@ dependencies = [
  "cairo-lang-starknet",
  "cairo-lang-starknet-classes",
  "cairo-type-derive",
- "cairo-vm 1.0.1 (git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo)",
+ "cairo-vm 1.0.1 (git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2)",
  "futures",
  "futures-util",
  "heck 0.4.1",
@@ -4504,7 +4504,7 @@ version = "0.1.0"
 dependencies = [
  "blockifier",
  "cairo-lang-starknet-classes",
- "cairo-vm 1.0.1 (git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo)",
+ "cairo-vm 1.0.1 (git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2)",
  "flate2",
  "indoc",
  "num-bigint",
@@ -4785,7 +4785,7 @@ version = "0.1.0"
 dependencies = [
  "blockifier",
  "cairo-lang-starknet-classes",
- "cairo-vm 1.0.1 (git+https://github.com/Moonsong-Labs/cairo-vm?branch=madara-monorepo)",
+ "cairo-vm 1.0.1 (git+https://github.com/karnotxyz/cairo-vm?branch=release%2F0.13.2)",
  "env_logger",
  "futures",
  "log",
