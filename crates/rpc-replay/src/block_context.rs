@@ -70,10 +70,18 @@ pub fn build_block_context(
     let versioned_constants = if let Ok(path) = env::var("SNOS_BLOCKIFIER_VERSIONED_CONSTANTS_PATH") {
         log::info!("Loading versioned constants from path: {}", path);
         // Try to load versioned constants from the specified JSON file
-        VersionedConstants::try_from(Path::new(&path)).map_err(|e| {
-            log::error!("Failed to load versioned constants from file {}, {}", path, e);
-            FeltConversionError::CustomError(format!("Failed to load versioned constants from file: {}", e))
-        })?
+        match VersionedConstants::try_from(Path::new(&path)) {
+            Ok(data) => {
+                // Use the file if found
+                log::info!("Found the file at {}. Reading and using it!", path);
+                data
+            }
+            Err(e) => {
+                // Fallback to default if failed to load the file
+                log::warn!("Failed to load versioned constants from file {}, falling back to default, {}", path, e);
+                VersionedConstants::get(starknet_version).clone()
+            }
+        }
     } else {
         log::info!("Env for versioned constants not set. Using default values");
         // Use the default versioned constants from the library
