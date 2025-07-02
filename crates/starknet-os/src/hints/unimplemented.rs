@@ -1,1 +1,4 @@
-// This file is intended to list all the unimplemented hints found by the `hint_tool` binary
+use indoc::indoc;
+
+#[allow(unused)]
+pub const HINT_4: &str = indoc! {r#"exit_syscall(selector=ids.SHA256_PROCESS_BLOCK_SELECTOR)"#};
