@@ -419,7 +419,7 @@ dependencies = [
 [[package]]
 name = "blockifier"
 version = "0.8.0-rc.3"
-source = "git+https://github.com/Moonsong-Labs/sequencer?rev=6624e910c57db9a16f1607c1ed26f7d8f1114e73#6624e910c57db9a16f1607c1ed26f7d8f1114e73"
+source = "git+https://github.com/karnotxyz/sequencer?branch=release%2F0.13.2#6624e910c57db9a16f1607c1ed26f7d8f1114e73"
 dependencies = [
  "anyhow",
  "ark-ec",
@@ -3038,14 +3038,15 @@ checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
 
 [[package]]
 name = "pathfinder-common"
-version = "0.14.3"
-source = "git+https://github.com/Moonsong-Labs/pathfinder?rev=9c19d9a37be8f447ec4548456c440ccbd0e44260#9c19d9a37be8f447ec4548456c440ccbd0e44260"
+version = "0.15.2"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=b395d62bf7f0fe259477abf1db312c6a800752cc#b395d62bf7f0fe259477abf1db312c6a800752cc"
 dependencies = [
  "anyhow",
  "bitvec",
  "fake",
  "metrics",
  "num-bigint",
+ "num-traits 0.2.19",
  "paste",
  "pathfinder-crypto",
  "primitive-types",
@@ -3062,8 +3063,8 @@ dependencies = [
 
 [[package]]
 name = "pathfinder-crypto"
-version = "0.14.3"
-source = "git+https://github.com/Moonsong-Labs/pathfinder?rev=9c19d9a37be8f447ec4548456c440ccbd0e44260#9c19d9a37be8f447ec4548456c440ccbd0e44260"
+version = "0.15.2"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=b395d62bf7f0fe259477abf1db312c6a800752cc#b395d62bf7f0fe259477abf1db312c6a800752cc"
 dependencies = [
  "bitvec",
  "fake",
@@ -3073,8 +3074,8 @@ dependencies = [
 
 [[package]]
 name = "pathfinder-serde"
-version = "0.14.3"
-source = "git+https://github.com/Moonsong-Labs/pathfinder?rev=9c19d9a37be8f447ec4548456c440ccbd0e44260#9c19d9a37be8f447ec4548456c440ccbd0e44260"
+version = "0.15.2"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=b395d62bf7f0fe259477abf1db312c6a800752cc#b395d62bf7f0fe259477abf1db312c6a800752cc"
 dependencies = [
  "anyhow",
  "num-bigint",
@@ -4418,8 +4419,8 @@ dependencies = [
 
 [[package]]
 name = "starknet-gateway-types"
-version = "0.14.3"
-source = "git+https://github.com/Moonsong-Labs/pathfinder?rev=9c19d9a37be8f447ec4548456c440ccbd0e44260#9c19d9a37be8f447ec4548456c440ccbd0e44260"
+version = "0.15.2"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=b395d62bf7f0fe259477abf1db312c6a800752cc#b395d62bf7f0fe259477abf1db312c6a800752cc"
 dependencies = [
  "anyhow",
  "fake",
@@ -4579,7 +4580,7 @@ dependencies = [
 [[package]]
 name = "starknet_api"
 version = "0.13.0-rc.1"
-source = "git+https://github.com/Moonsong-Labs/sequencer?rev=6624e910c57db9a16f1607c1ed26f7d8f1114e73#6624e910c57db9a16f1607c1ed26f7d8f1114e73"
+source = "git+https://github.com/karnotxyz/sequencer?branch=release%2F0.13.2#6624e910c57db9a16f1607c1ed26f7d8f1114e73"
 dependencies = [
  "bitvec",
  "cairo-lang-starknet-classes",
@@ -4734,16 +4735,16 @@ dependencies = [
 
 [[package]]
 name = "tagged"
-version = "0.14.3"
-source = "git+https://github.com/Moonsong-Labs/pathfinder?rev=9c19d9a37be8f447ec4548456c440ccbd0e44260#9c19d9a37be8f447ec4548456c440ccbd0e44260"
+version = "0.15.2"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=b395d62bf7f0fe259477abf1db312c6a800752cc#b395d62bf7f0fe259477abf1db312c6a800752cc"
 dependencies = [
  "fake",
 ]
 
 [[package]]
 name = "tagged-debug-derive"
-version = "0.14.3"
-source = "git+https://github.com/Moonsong-Labs/pathfinder?rev=9c19d9a37be8f447ec4548456c440ccbd0e44260#9c19d9a37be8f447ec4548456c440ccbd0e44260"
+version = "0.15.2"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=b395d62bf7f0fe259477abf1db312c6a800752cc#b395d62bf7f0fe259477abf1db312c6a800752cc"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -4,7 +4,7 @@ use cairo_vm::types::layout_name::LayoutName;
 use clap::Parser;
 use prove_block::debug_prove_error;
 
-const DEFAULT_COMPILED_OS: &[u8] = include_bytes!("../../../../build/os_latest.json");
+const DEFAULT_COMPILED_OS: &[u8] = include_bytes!("../../../../build/os_v_0.13.2.1.json");
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -13,7 +13,7 @@ struct Args {
     block_number: u64,
 
     /// RPC endpoint to use for fact fetching
-    #[arg(long = "rpc-provider", default_value = "http://localhost:9545")]
+    #[arg(long = "rpc-provider", default_value = "http://localhost:8000")]
     rpc_provider: String,
 
     /// Optional path to store the pie
@@ -43,6 +43,6 @@ async fn main() {
     pie.run_validity_checks().expect("Valid PIE");
 
     if let Some(output_path) = args.output {
-        pie.write_zip_file(&output_path).expect("Should write file to output path");
+        pie.write_zip_file(&output_path, true).expect("Should write file to output path");
     }
 }

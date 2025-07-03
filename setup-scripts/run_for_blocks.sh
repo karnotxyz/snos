@@ -4,7 +4,7 @@
 # Usage: ./run_prove_blocks.sh
 
 # RPC provider URL
-RPC_URL="http://localhost:9545"
+RPC_URL="http://localhost:8000"
 
 # Initialize counters and temporary files for tracking
 successful_count=0
