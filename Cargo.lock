@@ -3039,7 +3039,7 @@ checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
 [[package]]
 name = "pathfinder-common"
 version = "0.15.2"
-source = "git+https://github.com/karnotxyz/pathfinder?rev=da522595fa5cf274dbd0f04fdddf779902d9fabb#da522595fa5cf274dbd0f04fdddf779902d9fabb"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35#8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35"
 dependencies = [
  "anyhow",
  "bitvec",
@@ -3064,7 +3064,7 @@ dependencies = [
 [[package]]
 name = "pathfinder-crypto"
 version = "0.15.2"
-source = "git+https://github.com/karnotxyz/pathfinder?rev=da522595fa5cf274dbd0f04fdddf779902d9fabb#da522595fa5cf274dbd0f04fdddf779902d9fabb"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35#8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35"
 dependencies = [
  "bitvec",
  "fake",
@@ -3075,7 +3075,7 @@ dependencies = [
 [[package]]
 name = "pathfinder-serde"
 version = "0.15.2"
-source = "git+https://github.com/karnotxyz/pathfinder?rev=da522595fa5cf274dbd0f04fdddf779902d9fabb#da522595fa5cf274dbd0f04fdddf779902d9fabb"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35#8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35"
 dependencies = [
  "anyhow",
  "num-bigint",
@@ -4420,7 +4420,7 @@ dependencies = [
 [[package]]
 name = "starknet-gateway-types"
 version = "0.15.2"
-source = "git+https://github.com/karnotxyz/pathfinder?rev=da522595fa5cf274dbd0f04fdddf779902d9fabb#da522595fa5cf274dbd0f04fdddf779902d9fabb"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35#8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35"
 dependencies = [
  "anyhow",
  "fake",
@@ -4736,7 +4736,7 @@ dependencies = [
 [[package]]
 name = "tagged"
 version = "0.15.2"
-source = "git+https://github.com/karnotxyz/pathfinder?rev=da522595fa5cf274dbd0f04fdddf779902d9fabb#da522595fa5cf274dbd0f04fdddf779902d9fabb"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35#8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35"
 dependencies = [
  "fake",
 ]
@@ -4744,7 +4744,7 @@ dependencies = [
 [[package]]
 name = "tagged-debug-derive"
 version = "0.15.2"
-source = "git+https://github.com/karnotxyz/pathfinder?rev=da522595fa5cf274dbd0f04fdddf779902d9fabb#da522595fa5cf274dbd0f04fdddf779902d9fabb"
+source = "git+https://github.com/karnotxyz/pathfinder?rev=8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35#8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35"
 dependencies = [
  "proc-macro2",
  "quote",

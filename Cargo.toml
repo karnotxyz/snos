@@ -60,10 +60,10 @@ num-bigint = "0.4"
 num-integer = "0.1.45"
 num-traits = "0.2.16"
 once_cell = "1.20.0"
-pathfinder-common = { git = "https://github.com/karnotxyz/pathfinder", rev = "da522595fa5cf274dbd0f04fdddf779902d9fabb", package = "pathfinder-common" }
-pathfinder-crypto = { git = "https://github.com/karnotxyz/pathfinder", rev = "da522595fa5cf274dbd0f04fdddf779902d9fabb", package = "pathfinder-crypto" }
-pathfinder-gateway-types = { git = "https://github.com/karnotxyz/pathfinder", rev = "da522595fa5cf274dbd0f04fdddf779902d9fabb", package = "starknet-gateway-types" }
-pathfinder-serde = { git = "https://github.com/karnotxyz/pathfinder", rev = "da522595fa5cf274dbd0f04fdddf779902d9fabb", package = "pathfinder-serde" }
+pathfinder-common = { git = "https://github.com/karnotxyz/pathfinder", rev = "8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35", package = "pathfinder-common" }
+pathfinder-crypto = { git = "https://github.com/karnotxyz/pathfinder", rev = "8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35", package = "pathfinder-crypto" }
+pathfinder-gateway-types = { git = "https://github.com/karnotxyz/pathfinder", rev = "8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35", package = "starknet-gateway-types" }
+pathfinder-serde = { git = "https://github.com/karnotxyz/pathfinder", rev = "8c3a4cd0b68b9fd55dab87e8578ac910d6f75d35", package = "pathfinder-serde" }
 reqwest = { version = "0.11.18", features = ["blocking", "json"] }
 rpc-client = { path = "crates/rpc-client" }
 rpc-replay = { path = "crates/rpc-replay" }
