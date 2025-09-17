@@ -6,8 +6,6 @@ target/
 #poetry lockfile
 poetry.lock
 
-# Snos artifacts
-build/*
 
 # Cairo dependencies
 cairo-lang
