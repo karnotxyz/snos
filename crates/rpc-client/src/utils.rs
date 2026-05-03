@@ -6,7 +6,7 @@
 /// block on a coroutine but want to maintain the current runtime context. It's particularly
 /// helpful when integrating async code with synchronous interfaces.
 ///
-/// This function uses a local current-thread runtime for each synchronous bridge call.
+/// This function uses a local runtime for each synchronous bridge call.
 ///
 /// # Arguments
 ///
@@ -26,7 +26,8 @@ where
     F: std::future::Future<Output = T>,
 {
     let run = || {
-        tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .expect("Failed to create local Tokio runtime")
