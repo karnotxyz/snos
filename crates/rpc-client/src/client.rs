@@ -3,13 +3,14 @@
 use anyhow::anyhow;
 use futures::stream::{self, StreamExt};
 use log::info;
-use reqwest::Url;
+use reqwest::{Client, Url};
 use starknet::providers::jsonrpc::HttpTransport;
 use starknet::providers::{JsonRpcClient, Provider, ProviderError};
 use starknet_core::types::{ConfirmedBlockId, ContractStorageKeys, StorageKey};
 use starknet_types_core::felt::Felt;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::constants::{MAX_CONCURRENT_PROOF_REQUESTS, MAX_STORAGE_KEYS_PER_REQUEST, STARKNET_RPC_VERSION};
 use crate::types::{ClassProof, ContractProof};
@@ -72,10 +73,10 @@ impl RpcClientInner {
         let starknet_rpc_url = format!("{}/rpc/{}", base_url, STARKNET_RPC_VERSION);
         info!("Initializing Starknet RPC client with URL: {}", starknet_rpc_url);
 
-        let provider = JsonRpcClient::new(HttpTransport::new(
-            Url::parse(starknet_rpc_url.as_str())
-                .map_err(|e| anyhow!("Failed to parse URL ({}): {}", starknet_rpc_url, e))?,
-        ));
+        let url = Url::parse(starknet_rpc_url.as_str())
+            .map_err(|e| anyhow!("Failed to parse URL ({}): {}", starknet_rpc_url, e))?;
+        let http_client = Client::builder().pool_max_idle_per_host(0).timeout(Duration::from_secs(60)).build()?;
+        let provider = JsonRpcClient::new(HttpTransport::new_with_client(url, http_client));
 
         Ok(Self { starknet_client: provider })
     }
