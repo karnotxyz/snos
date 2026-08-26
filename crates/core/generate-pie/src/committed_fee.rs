@@ -8,6 +8,7 @@ use blockifier::state::state_api::{State, StateReader};
 use blockifier::transaction::objects::{HasRelatedFeeType, TransactionExecutionInfo};
 use blockifier::transaction::transaction_execution::Transaction;
 use log::{info, warn};
+use num_traits::ToPrimitive;
 use starknet::core::types::{Event, TransactionReceipt};
 use starknet_api::abi::abi_utils::selector_from_name;
 use starknet_api::core::ContractAddress;
@@ -289,12 +290,9 @@ fn adjust_balance(
     increase: bool,
 ) -> Result<(), String> {
     let (low_key, high_key) = get_address_balance_keys(owner);
-    let low = state
-        .get_storage_at(fee_token_address, low_key)
-        .map_err(|error| format!("failed to read low fee-token balance for {owner:?}: {error}"))?;
-    let high = state
-        .get_storage_at(fee_token_address, high_key)
-        .map_err(|error| format!("failed to read high fee-token balance for {owner:?}: {error}"))?;
+    let (low, high) = state
+        .get_fee_token_balance(owner, fee_token_address)
+        .map_err(|error| format!("failed to read fee-token balance for {owner:?}: {error}"))?;
     let low = felt_limb_to_u128(low)?;
     let high = felt_limb_to_u128(high)?;
     let (new_low, new_high) = adjust_u256_limbs(low, high, amount, increase)?;
@@ -309,11 +307,7 @@ fn adjust_balance(
 }
 
 fn felt_limb_to_u128(value: Felt) -> Result<u128, String> {
-    let bytes = value.to_bytes_be();
-    if bytes[..16].iter().any(|byte| *byte != 0) {
-        return Err(format!("fee-token balance limb exceeds u128: {value:#x}"));
-    }
-    Ok(u128::from_be_bytes(bytes[16..].try_into().expect("slice has exactly 16 bytes")))
+    value.to_u128().ok_or_else(|| format!("fee-token balance limb exceeds u128: {value:#x}"))
 }
 
 fn adjust_u256_limbs(low: u128, high: u128, amount: u128, increase: bool) -> Result<(u128, u128), String> {
@@ -379,17 +373,9 @@ mod tests {
     }
 
     #[test]
-    fn adjust_u256_adds_with_carry() {
+    fn adjusts_u256_limbs_and_rejects_underflow() {
         assert_eq!(adjust_u256_limbs(u128::MAX, 7, 2, true).unwrap(), (1, 8));
-    }
-
-    #[test]
-    fn adjust_u256_subtracts_with_borrow() {
         assert_eq!(adjust_u256_limbs(1, 8, 2, false).unwrap(), (u128::MAX, 7));
-    }
-
-    #[test]
-    fn adjust_u256_rejects_underflow() {
         assert!(adjust_u256_limbs(0, 0, 1, false).unwrap_err().contains("underflowed"));
     }
 }

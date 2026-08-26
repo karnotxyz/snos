@@ -391,13 +391,12 @@ async fn process_sequential_mode(
                     }
                 }
 
-                match next_sequential_block(&block_set, args.end_block)? {
-                    Some(next_block) => current_block = next_block,
-                    None => {
-                        info!("✅ Bounded sequential replay completed through block {}", args.end_block.unwrap());
-                        return Ok(());
-                    }
+                let processed_end = block_set.last().copied().ok_or("sequential block set cannot be empty")?;
+                if args.end_block == Some(processed_end) {
+                    info!("✅ Bounded sequential replay completed through block {}", processed_end);
+                    return Ok(());
                 }
+                current_block = processed_end.checked_add(1).ok_or("sequential block number overflow")?;
             }
             Ok(false) => {
                 info!("Not all blocks in set {:?} exist yet, waiting {} seconds", block_set, args.interval);
@@ -419,18 +418,6 @@ fn sequential_block_set(current_block: u64, num_blocks: u64, end_block: Option<u
     let requested_end = current_block.saturating_add(num_blocks.saturating_sub(1));
     let batch_end = end_block.map_or(requested_end, |end_block| requested_end.min(end_block));
     Some((current_block..=batch_end).collect())
-}
-
-fn next_sequential_block(
-    block_set: &[u64],
-    end_block: Option<u64>,
-) -> Result<Option<u64>, Box<dyn error::Error + Send + Sync>> {
-    let processed_end = *block_set.last().ok_or("sequential block set cannot be empty")?;
-    if end_block == Some(processed_end) {
-        return Ok(None);
-    }
-
-    processed_end.checked_add(1).map(Some).ok_or_else(|| "sequential block number overflow".into())
 }
 
 /// Process blocks from a JSON file (one at a time)
@@ -622,14 +609,13 @@ async fn check_blocks_exist(
     Ok(true)
 }
 
-fn pie_output_path(output_dir: Option<&str>, output_filename: &str) -> Option<String> {
-    output_dir.map(|output_dir| Path::new(output_dir).join(output_filename).to_string_lossy().into_owned())
-}
-
 /// Process a set of 1 block and generate PIE
 async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, ProcessError> {
     let output_filename = format!("cairo_pie_blocks_{}.zip", blocks[0]);
-    let output_path = pie_output_path(args.output_dir.as_deref(), &output_filename);
+    let output_path = args
+        .output_dir
+        .as_deref()
+        .map(|output_dir| Path::new(output_dir).join(&output_filename).to_string_lossy().into_owned());
 
     // Load versioned constants from file if provided
     // Note: Non-fatal error handling - if loading fails, we fall back to auto-detection
@@ -798,34 +784,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_directory_is_joined_with_the_generated_filename() {
-        let output_dir = "artifacts";
-        let output_filename = "cairo_pie_blocks_2479478.zip";
-
-        let output_path = pie_output_path(Some(output_dir), output_filename);
-
-        assert_eq!(output_path.as_deref(), Some("artifacts/cairo_pie_blocks_2479478.zip"));
-    }
-
-    #[test]
-    fn absent_output_directory_keeps_pie_in_memory() {
-        assert_eq!(pie_output_path(None, "cairo_pie_blocks_2479478.zip"), None);
-    }
-
-    #[test]
-    fn sequential_block_set_is_capped_by_inclusive_end_block() {
+    fn sequential_block_set_respects_optional_end_block() {
         assert_eq!(sequential_block_set(100, 5, Some(102)), Some(vec![100, 101, 102]));
         assert_eq!(sequential_block_set(103, 5, Some(102)), None);
-    }
-
-    #[test]
-    fn sequential_block_set_remains_unbounded_without_end_block() {
         assert_eq!(sequential_block_set(100, 2, None), Some(vec![100, 101]));
-    }
-
-    #[test]
-    fn next_sequential_block_stops_at_the_inclusive_end_block() {
-        assert_eq!(next_sequential_block(&[100, 101, 102], Some(102)).unwrap(), None);
-        assert_eq!(next_sequential_block(&[100, 101], Some(102)).unwrap(), Some(102));
     }
 }

@@ -109,11 +109,8 @@ RUN --mount=type=cache,target=/app/target \
 FROM --platform=linux/amd64 ubuntu:22.04
 
 ARG SOURCE_REVISION=unknown
-ARG SOURCE_DIFF_SHA256=unknown
 
-LABEL org.opencontainers.image.revision="$SOURCE_REVISION" \
-      io.karnot.snos.source-diff-sha256="$SOURCE_DIFF_SHA256" \
-      io.karnot.snos.starknet-version="0.14.2"
+LABEL org.opencontainers.image.revision="$SOURCE_REVISION"
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
