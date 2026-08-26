@@ -97,6 +97,7 @@ fn read_max_parallel_blocks(default: usize) -> usize {
 // ================================================================================================
 
 mod block_processor;
+mod committed_fee;
 pub mod constants;
 mod conversions;
 mod state_update;
