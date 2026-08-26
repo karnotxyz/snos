@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Multi-stage build for rpc-replay
 FROM --platform=linux/amd64 ubuntu:22.04 AS builder
 
@@ -56,13 +57,63 @@ RUN if find /usr/local/cargo/git/checkouts -name "requirements.txt" -path "*/scr
         echo "No requirements.txt found, skipping pip install"; \
     fi
 
-# Build the rpc-replay binary
-RUN . sequencer_venv/bin/activate \
+# Apollo 0.14.2 currently resolves tblgen 0.5.2, which requires LLVM 19.
+RUN apt-get update \
+    && apt-get install -y lsb-release wget software-properties-common gnupg \
+    && curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
+    && chmod +x /tmp/llvm.sh \
+    && /tmp/llvm.sh 19 all \
+    && apt-get install -y libmlir-19-dev mlir-19-tools libzstd-dev \
+    && test -x /usr/bin/llvm-config-19 \
+    && /usr/bin/llvm-config-19 --version \
+    && rm -f /tmp/llvm.sh \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LLVM_CONFIG_PATH=/usr/bin/llvm-config-19
+ENV TABLEGEN_190_PREFIX=/usr/lib/llvm-19
+ENV MLIR_SYS_190_PREFIX=/usr/lib/llvm-19
+ENV LLVM_SYS_191_PREFIX=/usr/lib/llvm-19
+
+# Apollo's build script manages this executable in a shared target directory and
+# can race with its own nested Cargo install. Seed the exact required compiler so
+# the build script takes its read-only, already-current path.
+RUN --mount=type=cache,target=/app/target \
+    . sequencer_venv/bin/activate \
     && . /usr/local/cargo/env \
-    && cargo build --release --bin rpc-replay
+    && mkdir -p /app/target/release/shared_executables \
+    && if ! /app/target/release/shared_executables/starknet-native-compile --version 2>/dev/null \
+        | grep -F '0.9.0-rc.6'; then \
+        rm -f /app/target/release/shared_executables/starknet-native-compile; \
+        rm -rf /tmp/starknet-native-compiler; \
+        CARGO_TARGET_DIR=/app/target cargo install \
+          --root /tmp/starknet-native-compiler \
+          --locked \
+          starknet-native-compile \
+          --version 0.9.0-rc.6; \
+        install -m 0755 \
+          /tmp/starknet-native-compiler/bin/starknet-native-compile \
+          /app/target/release/shared_executables/starknet-native-compile; \
+    fi \
+    && /app/target/release/shared_executables/starknet-native-compile --version \
+      | grep -F '0.9.0-rc.6'
+
+# Build the release binary serially so Apollo's remaining generated build tools
+# do not contend for their shared target directory.
+RUN --mount=type=cache,target=/app/target \
+    . sequencer_venv/bin/activate \
+    && . /usr/local/cargo/env \
+    && cargo build --release --bin rpc-replay --jobs 1 \
+    && cp /app/target/release/rpc-replay /app/rpc-replay
 
 # Runtime stage
 FROM --platform=linux/amd64 ubuntu:22.04
+
+ARG SOURCE_REVISION=unknown
+ARG SOURCE_DIFF_SHA256=unknown
+
+LABEL org.opencontainers.image.revision="$SOURCE_REVISION" \
+      io.karnot.snos.source-diff-sha256="$SOURCE_DIFF_SHA256" \
+      io.karnot.snos.starknet-version="0.14.2"
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -80,8 +131,8 @@ RUN useradd -m -u 1000 appuser
 # Create directories for logs and output
 RUN mkdir -p /app/output /app/logs && chown -R appuser:appuser /app
 
-# Copy the binary from builder stage
-COPY --from=builder /app/target/release/rpc-replay /usr/local/bin/rpc-replay
+# Copy the release binary out of the ephemeral build cache.
+COPY --from=builder /app/rpc-replay /usr/local/bin/rpc-replay
 
 # Copy Python virtual environment
 COPY --from=builder /app/sequencer_venv /app/sequencer_venv
