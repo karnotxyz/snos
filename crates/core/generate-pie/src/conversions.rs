@@ -31,9 +31,13 @@ use starknet::core::types::{
 use starknet::providers::Provider;
 use starknet_api::block::GasPrice;
 use starknet_api::contract_class::{ClassInfo, SierraVersion};
-use starknet_api::core::{felt_to_u128, ChainId, PatriciaKey};
-use starknet_api::execution_resources::GasAmount;
+use starknet_api::core::{felt_to_u128, ChainId, ContractAddress, EthAddress, PatriciaKey};
+use starknet_api::execution_resources::{GasAmount, GasVector};
 use starknet_api::transaction::fields::{AllResourceBounds, Fee, ResourceBounds, ValidResourceBounds};
+use starknet_api::transaction::{
+    Event as ApiEvent, EventContent as ApiEventContent, EventData as ApiEventData, EventKey as ApiEventKey,
+    L2ToL1Payload, MessageToL1 as ApiMessageToL1,
+};
 use starknet_os_types::deprecated_compiled_class::GenericDeprecatedCompiledClass;
 use starknet_os_types::sierra_contract_class::GenericSierraContractClass;
 use thiserror::Error;
@@ -306,6 +310,77 @@ fn extract_receipt_fee_amount(receipt: &TransactionReceipt) -> &Felt {
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "ConversionError is shared across receipt conversions and not worth boxing here"
+)]
+pub(crate) fn transaction_receipt_fee(receipt: &TransactionReceipt) -> Result<Fee, ConversionError> {
+    Ok(Fee(felt_to_u128_safe(extract_receipt_fee_amount(receipt), "actual_fee")?))
+}
+
+pub(crate) fn transaction_receipt_gas(receipt: &TransactionReceipt) -> GasVector {
+    let resources = match receipt {
+        TransactionReceipt::Invoke(receipt) => &receipt.execution_resources,
+        TransactionReceipt::L1Handler(receipt) => &receipt.execution_resources,
+        TransactionReceipt::Declare(receipt) => &receipt.execution_resources,
+        TransactionReceipt::Deploy(receipt) => &receipt.execution_resources,
+        TransactionReceipt::DeployAccount(receipt) => &receipt.execution_resources,
+    };
+
+    GasVector {
+        l1_gas: GasAmount(resources.l1_gas),
+        l1_data_gas: GasAmount(resources.l1_data_gas),
+        l2_gas: GasAmount(resources.l2_gas),
+    }
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ConversionError is shared across receipt conversions and not worth boxing here"
+)]
+pub(crate) fn transaction_receipt_events(receipt: &TransactionReceipt) -> Result<Vec<ApiEvent>, ConversionError> {
+    receipt
+        .events()
+        .iter()
+        .map(|event| {
+            Ok(ApiEvent {
+                from_address: ContractAddress::try_from(event.from_address)?,
+                content: ApiEventContent {
+                    keys: event.keys.iter().copied().map(ApiEventKey).collect(),
+                    data: ApiEventData(event.data.clone()),
+                },
+            })
+        })
+        .collect()
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ConversionError is shared across receipt conversions and not worth boxing here"
+)]
+pub(crate) fn transaction_receipt_messages(
+    receipt: &TransactionReceipt,
+) -> Result<Vec<ApiMessageToL1>, ConversionError> {
+    let messages = match receipt {
+        TransactionReceipt::Invoke(receipt) => &receipt.messages_sent,
+        TransactionReceipt::L1Handler(receipt) => &receipt.messages_sent,
+        TransactionReceipt::Declare(receipt) => &receipt.messages_sent,
+        TransactionReceipt::Deploy(receipt) => &receipt.messages_sent,
+        TransactionReceipt::DeployAccount(receipt) => &receipt.messages_sent,
+    };
+
+    messages
+        .iter()
+        .map(|message| {
+            Ok(ApiMessageToL1 {
+                from_address: ContractAddress::try_from(message.from_address)?,
+                to_address: EthAddress::try_from(message.to_address)?,
+                payload: L2ToL1Payload(message.payload.clone()),
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn transaction_receipt_hash(receipt: &TransactionReceipt) -> Felt {
     match receipt {
         TransactionReceipt::Invoke(receipt) => receipt.transaction_hash,
@@ -333,7 +408,7 @@ fn fetch_paid_fee_on_l1(
     tx_hash: Felt,
 ) -> Result<Fee, ConversionError> {
     let receipt = transaction_receipts.get(&tx_hash).ok_or(ConversionError::MissingTransactionReceipt { tx_hash })?;
-    let fee_amount = felt_to_u128_safe(extract_receipt_fee_amount(receipt), "actual_fee")?;
+    let fee_amount = transaction_receipt_fee(receipt)?.0;
 
     Ok(Fee(if fee_amount == 0 { DEFAULT_PAID_FEE_ON_L1 } else { fee_amount }))
 }

@@ -167,6 +167,11 @@ pub enum BlockProcessingError {
     #[error("Missing block state after transaction execution")]
     MissingBlockStateAfterExecution,
 
+    /// Historical replay requested committed receipt fees, but the execution trace or state could
+    /// not be reconciled safely.
+    #[error("Committed-fee replay failed for transaction {tx_hash:#x}: {reason}")]
+    CommittedFeeReplay { tx_hash: Felt, reason: String },
+
     /// Invalid contract address.
     #[error("Invalid contract address {address:?}: {source}")]
     InvalidContractAddress {

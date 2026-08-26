@@ -1,3 +1,4 @@
+use crate::committed_fee;
 use crate::constants::{
     is_special_contract_felt, ALIAS_CONTRACT_ADDRESS, BLOCK_HASH_CONTRACT_ADDRESS_FELT, STATEFUL_MAPPING_START,
     STORED_BLOCK_HASH_BUFFER,
@@ -271,18 +272,24 @@ impl BlockData {
         info!("Transaction executor created successfully");
         info!("Executing {} transactions using Blockifier", blockifier_txns.len());
 
-        // Execute transactions
-        let execution_deadline = None;
-        let execution_outputs: Vec<_> = txn_executor
-            .execute_txs(&blockifier_txns, execution_deadline)
-            .into_iter()
-            .collect::<Result<_, TransactionExecutorError>>()
-            .map_err(BlockProcessingError::TransactionExecution)?;
+        // Execute transactions. Historical chains that committed non-standard executor fees may
+        // opt into receipt-fee reconciliation; the default remains strict Blockifier execution.
+        let use_committed_receipts = committed_fee::is_enabled();
+        let txn_execution_infos: Vec<TransactionExecutionInfo> = if use_committed_receipts {
+            committed_fee::execute_with_committed_fees(&mut txn_executor, &transactions, &self.current_block_receipts)?
+        } else {
+            let execution_deadline = None;
+            txn_executor
+                .execute_txs(&blockifier_txns, execution_deadline)
+                .into_iter()
+                .collect::<Result<Vec<_>, TransactionExecutorError>>()
+                .map_err(BlockProcessingError::TransactionExecution)?
+                .into_iter()
+                .map(|(execution_info, _)| execution_info)
+                .collect()
+        };
 
         info!("{} transactions executed successfully", blockifier_txns.len());
-
-        let txn_execution_infos: Vec<TransactionExecutionInfo> =
-            execution_outputs.into_iter().map(|(execution_info, _)| execution_info).collect();
 
         let mut initial_reads = {
             let block_state =
@@ -353,6 +360,7 @@ impl BlockData {
             self.current_block.l1_da_mode,
             &self.starknet_version,
             &committed_revert_reasons,
+            use_committed_receipts.then_some(&self.current_block_receipts),
         )
         .await
         .map_err(|e| {
