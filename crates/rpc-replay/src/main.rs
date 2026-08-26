@@ -13,6 +13,7 @@ use rpc_client::RpcClient;
 use serde::{Deserialize, Serialize};
 use starknet::core::types::BlockId;
 use starknet::providers::Provider;
+use std::path::Path;
 use std::time::Duration;
 use std::{env, error, fs};
 use tokio::time::sleep;
@@ -142,6 +143,10 @@ struct Args {
     #[arg(long)]
     start_block: Option<u64>,
 
+    /// Inclusive final block number for bounded sequential replay
+    #[arg(long)]
+    end_block: Option<u64>,
+
     #[arg(long, default_value = "1")]
     num_blocks: u64,
 
@@ -218,6 +223,10 @@ async fn main() -> Result<(), Box<dyn error::Error + Send + Sync>> {
         return Err("--num-blocks must be greater than 0".into());
     }
 
+    if args.end_block.is_some() && args.json_file.is_some() {
+        return Err("--end-block is only supported with --start-block in sequential mode".into());
+    }
+
     // Validate MongoDB parameters
     if args.upload_to_db {
         if args.mongo_uri.is_none() {
@@ -285,6 +294,9 @@ async fn main() -> Result<(), Box<dyn error::Error + Send + Sync>> {
         ExecutionMode::Sequential { start_block } => {
             info!("  Mode: Sequential");
             info!("  Start block: {}", start_block);
+            if let Some(end_block) = args.end_block {
+                info!("  End block: {} (inclusive)", end_block);
+            }
         }
         ExecutionMode::FromJson { blocks } => {
             info!("  Mode: JSON file");
@@ -299,6 +311,9 @@ async fn main() -> Result<(), Box<dyn error::Error + Send + Sync>> {
     info!("  Error Log directory: {}", args.log_dir);
 
     fs::create_dir_all(&args.log_dir)?;
+    if let Some(output_dir) = &args.output_dir {
+        fs::create_dir_all(output_dir)?;
+    }
 
     // Initialize RPC client for block checking
     // let rpc_client = RpcClient::new(&args.rpc_url);
@@ -326,10 +341,17 @@ async fn process_sequential_mode(
 ) -> Result<(), Box<dyn error::Error + Send + Sync>> {
     let mut current_block = start_block;
 
-    info!("🔄 Starting infinite sequential block processing loop");
+    if let Some(end_block) = args.end_block {
+        info!("🔄 Starting bounded sequential block processing through block {}", end_block);
+    } else {
+        info!("🔄 Starting infinite sequential block processing loop");
+    }
 
     loop {
-        let block_set: Vec<u64> = (current_block..current_block + args.num_blocks).collect();
+        let Some(block_set) = sequential_block_set(current_block, args.num_blocks, args.end_block) else {
+            info!("✅ Bounded sequential replay completed through block {}", args.end_block.unwrap());
+            return Ok(());
+        };
         info!("📋 Processing block set: {:?}", block_set);
 
         // Check if all blocks exist
@@ -350,8 +372,6 @@ async fn process_sequential_mode(
                                 log::error!("Failed to upload to MongoDB: {}", e);
                             }
                         }
-
-                        current_block += args.num_blocks;
                     }
                     Err(e) => {
                         log::error!("Failed to generate PIE for blocks {:?}: {}", block_set, e);
@@ -368,11 +388,15 @@ async fn process_sequential_mode(
                                 log::error!("Failed to upload error to MongoDB: {}", upload_err);
                             }
                         }
-
-                        // Move to the next set anyway to avoid getting stuck
-                        current_block += args.num_blocks;
                     }
                 }
+
+                let processed_end = block_set.last().copied().ok_or("sequential block set cannot be empty")?;
+                if args.end_block == Some(processed_end) {
+                    info!("✅ Bounded sequential replay completed through block {}", processed_end);
+                    return Ok(());
+                }
+                current_block = processed_end.checked_add(1).ok_or("sequential block number overflow")?;
             }
             Ok(false) => {
                 info!("Not all blocks in set {:?} exist yet, waiting {} seconds", block_set, args.interval);
@@ -384,6 +408,16 @@ async fn process_sequential_mode(
             }
         }
     }
+}
+
+fn sequential_block_set(current_block: u64, num_blocks: u64, end_block: Option<u64>) -> Option<Vec<u64>> {
+    if end_block.is_some_and(|end_block| current_block > end_block) {
+        return None;
+    }
+
+    let requested_end = current_block.saturating_add(num_blocks.saturating_sub(1));
+    let batch_end = end_block.map_or(requested_end, |end_block| requested_end.min(end_block));
+    Some((current_block..=batch_end).collect())
 }
 
 /// Process blocks from a JSON file (one at a time)
@@ -578,6 +612,10 @@ async fn check_blocks_exist(
 /// Process a set of 1 block and generate PIE
 async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, ProcessError> {
     let output_filename = format!("cairo_pie_blocks_{}.zip", blocks[0]);
+    let output_path = args
+        .output_dir
+        .as_deref()
+        .map(|output_dir| Path::new(output_dir).join(&output_filename).to_string_lossy().into_owned());
 
     // Load versioned constants from file if provided
     // Note: Non-fatal error handling - if loading fails, we fall back to auto-detection
@@ -600,7 +638,7 @@ async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, Proces
             args.is_l3,
         ),
         os_hints_config: OsHintsConfiguration::default_with_is_l3(args.is_l3),
-        output_path: args.output_dir.clone(),
+        output_path,
         layout: parse_layout(&args.layout)
             .map_err(|e| ProcessError::Panic(format!("Failed to parse layout: {}", e)))?,
         versioned_constants,
@@ -622,7 +660,7 @@ async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, Proces
     match result {
         Ok(Ok(Ok(output))) => {
             info!("PIE generation completed for blocks {:?}", output.blocks_processed);
-            Ok(output_filename)
+            Ok(output.output_path.unwrap_or(output_filename))
         }
         Ok(Ok(Err(e))) => {
             log::error!("PIE generation failed for blocks {:?}: {}", blocks, e);
@@ -739,4 +777,16 @@ async fn write_error_to_file(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequential_block_set_respects_optional_end_block() {
+        assert_eq!(sequential_block_set(100, 5, Some(102)), Some(vec![100, 101, 102]));
+        assert_eq!(sequential_block_set(103, 5, Some(102)), None);
+        assert_eq!(sequential_block_set(100, 2, None), Some(vec![100, 101]));
+    }
 }

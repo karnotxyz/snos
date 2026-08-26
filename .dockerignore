@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+.vscode
+.DS_Store
+target
+tmp
+sequencer_venv
+**/__pycache__
+**/*.pyc

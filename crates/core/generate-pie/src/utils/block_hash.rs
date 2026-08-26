@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use blockifier::transaction::objects::TransactionExecutionInfo;
-use starknet::core::types::{L1DataAvailabilityMode as CoreL1DataAvailabilityMode, StateDiff as CoreStateDiff};
+use starknet::core::types::{
+    L1DataAvailabilityMode as CoreL1DataAvailabilityMode, StateDiff as CoreStateDiff, TransactionReceipt,
+};
 use starknet_api::block::StarknetVersion;
 use starknet_api::block_hash::block_hash_calculator::{
     calculate_block_commitments, BlockHeaderCommitments, TransactionHashingData,
@@ -12,7 +14,10 @@ use starknet_api::state::{StorageKey, ThinStateDiff};
 use starknet_api::transaction::fields::TransactionSignature;
 use starknet_types_core::felt::Felt;
 
-use crate::conversions::convert_l1_da_mode;
+use crate::conversions::{
+    convert_l1_da_mode, transaction_receipt_events, transaction_receipt_fee, transaction_receipt_gas,
+    transaction_receipt_messages,
+};
 use crate::error::BlockProcessingError;
 use crate::utils::revert_reason::transaction_output_for_block_hash;
 
@@ -30,6 +35,7 @@ fn build_transaction_hashing_data(
     transactions: &[ExecutableTransaction],
     tx_execution_infos: &[TransactionExecutionInfo],
     committed_revert_reasons: &HashMap<Felt, String>,
+    committed_receipts: Option<&HashMap<Felt, TransactionReceipt>>,
 ) -> Result<Vec<TransactionHashingData>, BlockProcessingError> {
     if transactions.len() != tx_execution_infos.len() {
         return Err(BlockProcessingError::new_custom(format!(
@@ -39,22 +45,36 @@ fn build_transaction_hashing_data(
         )));
     }
 
-    Ok(transactions
+    transactions
         .iter()
         .zip(tx_execution_infos.iter())
         .map(|(tx, tx_execution_info)| {
             // Prefer the revert reason committed on-chain (keyed by transaction hash) so the
             // recomputed receipt commitment matches the block hash regardless of sequencer version.
             let committed_revert_reason = committed_revert_reasons.get(&tx.tx_hash().0).map(String::as_str);
-            let transaction_output = transaction_output_for_block_hash(tx_execution_info, committed_revert_reason);
+            let mut transaction_output = transaction_output_for_block_hash(tx_execution_info, committed_revert_reason);
 
-            TransactionHashingData {
+            if let Some(receipt) = committed_receipts.and_then(|receipts| receipts.get(&tx.tx_hash().0)) {
+                // Historical executors may charge a different amount or emit a different flattened
+                // event/message stream than current Blockifier. These are authoritative receipt
+                // fields for block hashing; the OS consumes the historical charge and verifies the
+                // re-executed call trace separately.
+                transaction_output.actual_fee = transaction_receipt_fee(receipt)
+                    .map_err(|error| BlockProcessingError::new_custom(error.to_string()))?;
+                transaction_output.gas_consumed = transaction_receipt_gas(receipt);
+                transaction_output.events = transaction_receipt_events(receipt)
+                    .map_err(|error| BlockProcessingError::new_custom(error.to_string()))?;
+                transaction_output.messages_sent = transaction_receipt_messages(receipt)
+                    .map_err(|error| BlockProcessingError::new_custom(error.to_string()))?;
+            }
+
+            Ok(TransactionHashingData {
                 transaction_signature: tx_signature_for_hashing(tx),
                 transaction_output,
                 transaction_hash: tx.tx_hash(),
-            }
+            })
         })
-        .collect())
+        .collect()
 }
 
 fn contract_address_from_felt(
@@ -171,9 +191,10 @@ pub async fn compute_block_hash_commitments(
     l1_da_mode: CoreL1DataAvailabilityMode,
     starknet_version: &StarknetVersion,
     committed_revert_reasons: &HashMap<Felt, String>,
+    committed_receipts: Option<&HashMap<Felt, TransactionReceipt>>,
 ) -> Result<BlockHeaderCommitments, BlockProcessingError> {
     let transaction_hashing_data =
-        build_transaction_hashing_data(transactions, tx_execution_infos, committed_revert_reasons)?;
+        build_transaction_hashing_data(transactions, tx_execution_infos, committed_revert_reasons, committed_receipts)?;
     let (commitments, _measurements) = calculate_block_commitments(
         &transaction_hashing_data,
         thin_state_diff,
