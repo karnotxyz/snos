@@ -99,6 +99,7 @@ fn read_max_parallel_blocks(default: usize) -> usize {
 mod block_processor;
 pub mod constants;
 mod conversions;
+mod runtime;
 mod state_update;
 pub mod utils;
 
@@ -186,20 +187,26 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
 
         tokio::spawn(async move {
             // Acquire semaphore permit to limit concurrent execution
-            let _permit = sem.acquire().await.expect("Failed to acquire semaphore permit");
+            let permit = sem.acquire_owned().await.expect("Failed to acquire semaphore permit");
             info!("=== Processing block {} ({}/{}) ===", block_number, index + 1, total_blocks);
 
             // Collect block information
             info!("Starting to collect block info for block {}", block_number);
-            let block_info = collect_single_block_info(
-                block_number,
-                is_l3,
-                &strk_fee_token_address,
-                &eth_fee_token_address,
-                versioned_constants,
-                rpc_client.clone(),
-            )
-            .await
+            let block_info = runtime::run_blocking_future(async move {
+                // Keep the concurrency permit until execution actually stops, even
+                // if the async caller is cancelled while the blocking task runs.
+                let _permit = permit;
+                collect_single_block_info(
+                    block_number,
+                    is_l3,
+                    &strk_fee_token_address,
+                    &eth_fee_token_address,
+                    versioned_constants,
+                    rpc_client,
+                )
+                .await
+            })
+            .await?
             .map_err(|e| PieGenerationError::BlockProcessing { block_number, source: Box::new(e) })?;
 
             info!("Block info collection completed for block {}", block_number);
@@ -264,44 +271,51 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
     };
     info!("OS hints configuration built successfully for {} blocks", input.blocks.len());
 
-    // Execute the Starknet OS
-    info!("Starting OS execution for multi-block processing");
-    let output = run_os_stateless(input.layout, os_hints)
-        .map_err(|e| PieGenerationError::OsExecution(format!("OS execution failed: {:?}", e)))?;
-    info!("Multi-block output generated successfully!");
+    runtime::run_blocking_future(async move {
+        // Execute the Starknet OS
+        info!("Starting OS execution for multi-block processing");
+        let output = run_os_stateless(input.layout, os_hints)
+            .map_err(|e| PieGenerationError::OsExecution(format!("OS execution failed: {:?}", e)))?;
+        info!("Multi-block output generated successfully!");
 
-    // Check execution steps and warn if exceeding threshold
-    let steps_count = output.cairo_pie.execution_resources.n_steps;
-    if steps_count > MAX_EXECUTION_STEPS_WARNING_THRESHOLD {
-        warn!(
-            "CairoPIE execution steps ({}) exceeds threshold ({})",
-            steps_count, MAX_EXECUTION_STEPS_WARNING_THRESHOLD
-        );
-    }
+        // Check execution steps and warn if exceeding threshold
+        let steps_count = output.cairo_pie.execution_resources.n_steps;
+        if steps_count > MAX_EXECUTION_STEPS_WARNING_THRESHOLD {
+            warn!(
+                "CairoPIE execution steps ({}) exceeds threshold ({})",
+                steps_count, MAX_EXECUTION_STEPS_WARNING_THRESHOLD
+            );
+        }
 
-    // Validate the generated PIE
-    info!("Validating generated Cairo PIE");
-    output
-        .cairo_pie
-        .run_validity_checks()
-        .map_err(|e| PieGenerationError::OsExecution(format!("PIE validation failed: {:?}", e)))?;
-    info!("Cairo PIE validation completed successfully");
+        // Validate the generated PIE
+        info!("Validating generated Cairo PIE");
+        output
+            .cairo_pie
+            .run_validity_checks()
+            .map_err(|e| PieGenerationError::OsExecution(format!("PIE validation failed: {:?}", e)))?;
+        info!("Cairo PIE validation completed successfully");
 
-    // Save to file if a path is specified
-    if let Some(output_path) = &input.output_path {
-        info!("Writing PIE to file: {}", output_path);
-        output.cairo_pie.write_zip_file(Path::new(output_path), true).map_err(|e| {
-            PieGenerationError::Io(std::io::Error::other(format!(
-                "Failed to write PIE to file {}: {:?}",
-                output_path, e
-            )))
-        })?;
-        info!("PIE written to file successfully: {}", output_path);
-    }
+        // Save to file if a path is specified
+        if let Some(output_path) = &input.output_path {
+            info!("Writing PIE to file: {}", output_path);
+            output.cairo_pie.write_zip_file(Path::new(output_path), true).map_err(|e| {
+                PieGenerationError::Io(std::io::Error::other(format!(
+                    "Failed to write PIE to file {}: {:?}",
+                    output_path, e
+                )))
+            })?;
+            info!("PIE written to file successfully: {}", output_path);
+        }
 
-    info!("PIE generation completed successfully for blocks {:?}", input.blocks);
+        info!("PIE generation completed successfully for blocks {:?}", input.blocks);
 
-    Ok(PieGenerationResult { output, blocks_processed: input.blocks.clone(), output_path: input.output_path.clone() })
+        Ok(PieGenerationResult {
+            output,
+            blocks_processed: input.blocks.clone(),
+            output_path: input.output_path.clone(),
+        })
+    })
+    .await?
 }
 
 pub fn parse_layout(layout: &str) -> anyhow::Result<LayoutName> {
