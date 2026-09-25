@@ -1,4 +1,4 @@
-use crate::constants::{ALIAS_CONTRACT_ADDRESS, BLOCK_HASH_CONTRACT_ADDRESS};
+use crate::constants::{ALIAS_CONTRACT_ADDRESS, BLOCK_HASH_CONTRACT_ADDRESS, STORED_BLOCK_HASH_BUFFER};
 use crate::types::initial_reads::accessed_keys_from_initial_reads;
 use blockifier::execution::call_info::CallInfo;
 use blockifier::state::cached_state::StateMaps;
@@ -283,7 +283,7 @@ fn insert_extra_storage_reads_keys(old_block_number: Felt, keys: &mut HashMap<Co
         contract_address!("0x5dd3d2f4429af886cd1a3b08289dbcea99a294197e9eb43b0e0325b4b"),
     ];
     if special_addresses.iter().any(|address| keys.contains_key(address)) {
-        let extra_storage_reads = 200 * 10; // TODO: 10 here is the STORED_BLOCK_HASH_BUFFER
+        let extra_storage_reads = 200 * STORED_BLOCK_HASH_BUFFER;
         if old_block_number >= Felt252::from(extra_storage_reads) {
             for i in 1..=extra_storage_reads {
                 keys.entry(BLOCK_HASH_CONTRACT_ADDRESS)
