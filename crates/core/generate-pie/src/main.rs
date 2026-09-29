@@ -52,7 +52,7 @@ struct Cli {
     #[arg(long, env = "SNOS_VERSIONED_CONSTANTS_PATH")]
     versioned_constants_path: Option<String>,
 
-    /// Private 0x5 oracle witnesses (JSON array); the root must already be in contract state.
+    /// Private oracle witnesses (JSON array); the root must already be in contract state.
     #[arg(long, env = "SNOS_ORACLE_WITNESSES_PATH")]
     oracle_witnesses_path: Option<std::path::PathBuf>,
 
