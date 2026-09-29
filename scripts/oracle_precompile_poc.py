@@ -11,11 +11,15 @@ from pathlib import Path
 import subprocess
 import sys
 
+from Crypto.Hash import keccak
 from starkware.cairo.common.poseidon_hash import poseidon_hash, poseidon_hash_many
 
 HEIGHT = 19
 DOMAIN = int.from_bytes(b'ORACLE_V1', 'big')
 PRIME = 2**251 + 17 * 2**192 + 1
+ORACLE_ADDRESS = int.from_bytes(
+    keccak.new(digest_bits=256, data=b'paradox_oracle_tick').digest(), 'big'
+) & ((1 << 250) - 1)
 
 
 def fixture():
@@ -25,7 +29,7 @@ def fixture():
     node = poseidon_hash_many([DOMAIN, publisher, asset, price])
     for depth, sibling in enumerate(siblings):
         node = poseidon_hash(sibling, node) if (asset >> depth) & 1 else poseidon_hash(node, sibling)
-    return dict(root=node, publisher=publisher, asset=asset, price=price,
+    return dict(address=ORACLE_ADDRESS, root=node, publisher=publisher, asset=asset, price=price,
                 response_price=price, siblings=siblings)
 
 
@@ -53,7 +57,7 @@ def main():
     assert replaced == 1
     program_file.write_text(json.dumps(program))
     base = fixture()
-    wire_witness = {k: v for k, v in base.items() if k != 'response_price'}
+    wire_witness = {k: v for k, v in base.items() if k not in ('address', 'response_price')}
     for key in ['root', 'publisher']:
         wire_witness[key] = hex(wire_witness[key])
     wire_witness['siblings'] = [hex(value) for value in wire_witness['siblings']]
@@ -68,6 +72,7 @@ def main():
     cases['negative_asset'] = dict(base, asset=PRIME - 1)
     cases['oversized_price'] = dict(base, price=2**128, response_price=2**128)
     cases['wrong_address'] = dict(base, address=3)
+    cases['legacy_address'] = dict(base, address=5)
     cases['wrong_selector'] = dict(base, selector=0)
     cases['insufficient_gas'] = dict(base, gas=999999)
     results = {}
