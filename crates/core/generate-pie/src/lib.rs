@@ -77,7 +77,6 @@ use starknet_os::{
 use tokio::sync::Semaphore;
 // Local module imports
 use crate::constants::{DEFAULT_MAX_PARALLEL_BLOCKS, MAX_EXECUTION_STEPS_WARNING_THRESHOLD};
-use block_processor::collect_single_block_info;
 use error::PieGenerationError;
 use types::{PieGenerationInput, PieGenerationResult};
 use utils::sort_abi_entries_for_deprecated_class;
@@ -161,6 +160,11 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
     input.validate()?;
     info!("Input configuration validated successfully");
 
+    let oracle_witnesses = Arc::new(
+        blockifier::execution::syscalls::oracle::OracleWitnesses::new(input.os_hints_config.oracle_witnesses.clone())
+            .map_err(PieGenerationError::InvalidConfig)?,
+    );
+
     // Initialize RPC client
     let rpc_client = RpcClient::try_new(&input.rpc_url)
         .map_err(|e| PieGenerationError::RpcClient(format!("Failed to initialize RPC client: {:?}", e)))?;
@@ -184,6 +188,7 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
         let versioned_constants = input.versioned_constants.clone();
         let total_blocks = input.blocks.len();
         let sem = semaphore.clone();
+        let oracle_witnesses = oracle_witnesses.clone();
 
         tokio::spawn(async move {
             // Acquire semaphore permit to limit concurrent execution
@@ -192,13 +197,14 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
 
             // Collect block information
             info!("Starting to collect block info for block {}", block_number);
-            let block_info = collect_single_block_info(
+            let block_info = block_processor::collect_single_block_info(
                 block_number,
                 is_l3,
                 &strk_fee_token_address,
                 &eth_fee_token_address,
                 versioned_constants,
                 rpc_client.clone(),
+                oracle_witnesses,
             )
             .await
             .map_err(|e| PieGenerationError::BlockProcessing { block_number, source: Box::new(e) })?;
@@ -260,6 +266,7 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
             },
             public_keys: input.public_keys.clone(),
             rng_seed_salt: None,
+            oracle_witnesses: input.os_hints_config.oracle_witnesses.clone(),
         },
         os_input: StarknetOsInput { os_block_inputs, deprecated_compiled_classes, compiled_classes },
     };
