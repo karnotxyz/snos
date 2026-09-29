@@ -52,6 +52,10 @@ struct Cli {
     #[arg(long, env = "SNOS_VERSIONED_CONSTANTS_PATH")]
     versioned_constants_path: Option<String>,
 
+    /// Private 0x5 oracle witnesses (JSON array); the root must already be in contract state.
+    #[arg(long, env = "SNOS_ORACLE_WITNESSES_PATH")]
+    oracle_witnesses_path: Option<std::path::PathBuf>,
+
     /// Public keys for OS execution (comma-separated hex values)
     #[arg(long, value_delimiter = ',', value_parser = parse_public_key, env = "SNOS_PUBLIC_KEYS")]
     public_keys: Option<Vec<starknet_types_core::felt::Felt>>,
@@ -98,12 +102,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         e
     })?;
 
+    let mut os_hints_config = OsHintsConfiguration::default_with_is_l3(cli.is_l3);
+    if let Some(path) = &cli.oracle_witnesses_path {
+        os_hints_config.oracle_witnesses = serde_json::from_reader(std::fs::File::open(path)?)?;
+    }
+
     // Build the input configuration
     let input = PieGenerationInput {
         rpc_url: cli.rpc_url.clone(),
         blocks: cli.blocks.clone(),
         chain_config: ChainConfig::new(&cli.chain, &cli.strk_fee_token_address, &cli.eth_fee_token_address, cli.is_l3),
-        os_hints_config: OsHintsConfiguration::default_with_is_l3(cli.is_l3),
+        os_hints_config,
         output_path: cli.output.clone(),
         layout: cli.layout,
         versioned_constants,

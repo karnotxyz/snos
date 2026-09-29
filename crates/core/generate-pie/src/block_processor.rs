@@ -53,6 +53,7 @@ pub struct BlockInfoResult {
 /// * `eth_fee_token_address` - The ETH fee token address
 /// * `versioned_constants` - Optional versioned constants to use instead of auto-detecting
 /// * `rpc_client` - The RPC client for fetching block data
+/// * `oracle_witnesses` - Immutable, prevalidated private oracle data for replay
 ///
 /// # Returns
 ///
@@ -78,7 +79,7 @@ pub struct BlockInfoResult {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let rpc_client = RpcClient::try_new("https://your-starknet-node.com")?;
-///     let result = collect_single_block_info(12345, false, &strk_addr, &eth_addr, None, rpc_client).await?;
+///     let result = collect_single_block_info(12345, false, &strk_addr, &eth_addr, None, rpc_client, Default::default()).await?;
 ///     println!("Processed block with {} transactions", result.os_block_input.transactions.len());
 ///     Ok(())
 /// }
@@ -90,6 +91,7 @@ pub async fn collect_single_block_info(
     eth_fee_token_address: &ContractAddress,
     versioned_constants: Option<blockifier::blockifier_versioned_constants::VersionedConstants>,
     rpc_client: RpcClient,
+    oracle_witnesses: std::sync::Arc<blockifier::execution::syscalls::oracle::OracleWitnesses>,
 ) -> Result<BlockInfoResult, BlockProcessingError> {
     info!("Starting block info collection for block {}", block_number);
 
@@ -97,9 +99,11 @@ pub async fn collect_single_block_info(
     let block_data = BlockData::fetch(block_number, &rpc_client).await?;
 
     // Step 2: Build block context (only once, reused throughout)
-    let block_context = block_data
+    let mut block_context = block_data
         .build_context(is_l3, strk_fee_token_address, eth_fee_token_address, versioned_constants)
         .map_err(BlockProcessingError::ContextBuilding)?;
+
+    block_context.oracle_witnesses = oracle_witnesses;
 
     // Step 3: Process transactions and extract execution information
     let tx_result = block_data.process_transactions(block_number, &rpc_client, &block_context).await?;

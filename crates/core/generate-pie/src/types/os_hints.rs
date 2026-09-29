@@ -16,6 +16,7 @@
 ///     debug_mode: true,
 ///     full_output: true,
 ///     use_kzg_da: false,
+///     oracle_witnesses: Vec::new(),
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -26,6 +27,8 @@ pub struct OsHintsConfiguration {
     pub full_output: bool,
     /// Whether to use KZG (Kate-Zaverucha-Goldberg) data availability mode.
     pub use_kzg_da: bool,
+    /// Private oracle witnesses keyed by root, publisher and asset. Never included in tx calldata.
+    pub oracle_witnesses: Vec<blockifier::execution::syscalls::oracle::OracleWitness>,
 }
 
 impl Default for OsHintsConfiguration {
@@ -38,16 +41,16 @@ impl Default for OsHintsConfiguration {
     /// - Full output: disabled (for performance)
     /// - KZG DA: enabled (modern data availability)
     fn default() -> Self {
-        Self { debug_mode: true, full_output: true, use_kzg_da: false }
+        Self { debug_mode: true, full_output: true, use_kzg_da: false, oracle_witnesses: Vec::new() }
     }
 }
 
 impl OsHintsConfiguration {
     pub fn default_with_is_l3(is_l3: bool) -> OsHintsConfiguration {
         if is_l3 {
-            Self { debug_mode: true, full_output: false, use_kzg_da: false }
+            Self { debug_mode: true, full_output: false, use_kzg_da: false, oracle_witnesses: Vec::new() }
         } else {
-            Self { debug_mode: true, full_output: true, use_kzg_da: false }
+            Self { debug_mode: true, full_output: true, use_kzg_da: false, oracle_witnesses: Vec::new() }
         }
     }
 }
