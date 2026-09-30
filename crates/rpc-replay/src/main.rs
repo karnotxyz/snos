@@ -629,6 +629,7 @@ async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, Proces
     };
 
     let input = PieGenerationInput {
+        committed_data_rpc_url: None,
         rpc_url: args.rpc_url.clone(),
         blocks: blocks.to_vec(),
         chain_config: ChainConfig::new(
