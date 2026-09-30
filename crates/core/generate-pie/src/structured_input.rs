@@ -62,11 +62,12 @@ mod tests {
         let input = serde_json::json!({
             "rpc_url": "http://127.0.0.1:1234", "blocks": [1, 2], "layout": "all_cairo",
             "chain_config": crate::types::ChainConfig::default(),
-            "os_hints_config": { "committed_data_activation_block": 1, "committed_data_witnesses": [] }
+            "os_hints_config": { "committed_data_activation_block": 1, "committed_data_readers": ["0x456", "0x123"], "committed_data_witnesses": [] }
         });
         let bytes = serde_json::to_vec(&input).unwrap();
         let parsed = read_pie_input(&bytes[..]).unwrap();
         assert_eq!(parsed.os_hints_config.committed_data_activation_block, Some(1));
+        assert_eq!(parsed.os_hints_config.committed_data_readers, "0x123,0x456".parse().unwrap());
         assert!(parsed.versioned_constants.is_none());
         assert_eq!(parsed.blocks, vec![1, 2]);
     }

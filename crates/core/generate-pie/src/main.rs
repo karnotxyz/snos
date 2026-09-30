@@ -18,12 +18,16 @@ use log::{error, info};
 struct Cli {
     /// Read the complete PieGenerationInput JSON from stdin, including private witnesses.
     /// Intended for orchestrators; avoids temporary files and command-line size limits.
-    #[arg(long, conflicts_with_all = ["blocks", "rpc_url", "committed_data_witnesses_path", "committed_data_activation_block", "committed_data_rpc_url", "layout", "chain", "strk_fee_token_address", "eth_fee_token_address", "is_l3", "output", "versioned_constants_path", "public_keys"])]
+    #[arg(long, conflicts_with_all = ["blocks", "rpc_url", "committed_data_witnesses_path", "committed_data_activation_block", "committed_data_readers", "committed_data_rpc_url", "layout", "chain", "strk_fee_token_address", "eth_fee_token_address", "is_l3", "output", "versioned_constants_path", "public_keys"])]
     input_stdin: bool,
 
     /// Inclusive extension activation height; must match the accepted OS configuration.
     #[arg(long, env = "SNOS_COMMITTED_DATA_ACTIVATION_BLOCK")]
     committed_data_activation_block: Option<u64>,
+
+    /// Comma-separated approved adapter storage addresses; must match the proved chain policy.
+    #[arg(long, default_value = "")]
+    committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
 
     /// Operator-configured Madara admin RPC for authenticated witnesses.
     #[arg(long, env = "SNOS_COMMITTED_DATA_RPC_URL")]
@@ -109,6 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let versioned_constants = load_versioned_constants(cli.versioned_constants_path.as_deref())?;
         let mut os_hints_config = OsHintsConfiguration::default_with_is_l3(cli.is_l3);
         os_hints_config.committed_data_activation_block = cli.committed_data_activation_block;
+        os_hints_config.committed_data_readers = cli.committed_data_readers;
         if let Some(path) = &cli.committed_data_witnesses_path {
             // Keep the standalone CLI convenience; production callers can supply structured input.
             os_hints_config.committed_data_witnesses =
@@ -181,7 +186,7 @@ mod cli_tests {
     #[test]
     fn structured_input_has_no_ambiguous_cli_overrides() {
         assert!(Cli::try_parse_from(["generate-pie", "--input-stdin"]).is_ok());
-        for flag in ["--chain", "--layout", "--rpc-url", "--committed-data-rpc-url"] {
+        for flag in ["--chain", "--layout", "--rpc-url", "--committed-data-rpc-url", "--committed-data-readers"] {
             assert!(Cli::try_parse_from(["generate-pie", "--input-stdin", flag, "ignored"]).is_err());
         }
     }
