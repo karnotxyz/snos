@@ -15,7 +15,7 @@ use log::info;
 use rpc_client::RpcClient;
 use starknet::core::types::BlockId;
 use starknet_api::block::BlockHash;
-use starknet_api::core::{ClassHash, CompiledClassHash, ContractAddress};
+use starknet_api::core::{ClassHash, CompiledClassHash};
 use starknet_api::deprecated_contract_class::ContractClass;
 use starknet_os::io::os_input::OsBlockInput;
 use starknet_types_core::felt::Felt;
@@ -48,12 +48,10 @@ pub struct BlockInfoResult {
 /// # Arguments
 ///
 /// * `block_number` - The block number to process
-/// * `is_l3` - Whether this is an L3 chain (true) or L2 chain (false)
-/// * `strk_fee_token_address` - The STRK fee token address
-/// * `eth_fee_token_address` - The ETH fee token address
+/// * `chain_config` - Chain mode and fee-token addresses
 /// * `versioned_constants` - Optional versioned constants to use instead of auto-detecting
 /// * `rpc_client` - The RPC client for fetching block data
-/// * `oracle_witnesses` - Immutable, prevalidated private oracle data for replay
+/// * `committed_data_witnesses` - Immutable, prevalidated private committed_data data for replay
 ///
 /// # Returns
 ///
@@ -70,28 +68,13 @@ pub struct BlockInfoResult {
 /// - `BlockProcessingError::ClassProof` for class proof errors
 /// - `BlockProcessingError::ContractClassConversion` for contract class conversion errors
 ///
-/// # Example
-///
-/// ```rust
-/// use generate_pie::block_processor::collect_single_block_info;
-/// use rpc_client::RpcClient;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let rpc_client = RpcClient::try_new("https://your-starknet-node.com")?;
-///     let result = collect_single_block_info(12345, false, &strk_addr, &eth_addr, None, rpc_client, Default::default()).await?;
-///     println!("Processed block with {} transactions", result.os_block_input.transactions.len());
-///     Ok(())
-/// }
-/// ```
 pub async fn collect_single_block_info(
     block_number: u64,
-    is_l3: bool,
-    strk_fee_token_address: &ContractAddress,
-    eth_fee_token_address: &ContractAddress,
+    chain_config: &crate::types::ChainConfig,
     versioned_constants: Option<blockifier::blockifier_versioned_constants::VersionedConstants>,
     rpc_client: RpcClient,
-    oracle_witnesses: std::sync::Arc<blockifier::execution::syscalls::oracle::OracleWitnesses>,
+    committed_data_witnesses: std::sync::Arc<blockifier::execution::syscalls::committed_data::CommittedDataWitnesses>,
+    committed_data_activation_block: Option<u64>,
 ) -> Result<BlockInfoResult, BlockProcessingError> {
     info!("Starting block info collection for block {}", block_number);
 
@@ -100,10 +83,16 @@ pub async fn collect_single_block_info(
 
     // Step 2: Build block context (only once, reused throughout)
     let mut block_context = block_data
-        .build_context(is_l3, strk_fee_token_address, eth_fee_token_address, versioned_constants)
+        .build_context(
+            chain_config.is_l3,
+            &chain_config.strk_fee_token_address,
+            &chain_config.eth_fee_token_address,
+            versioned_constants,
+        )
         .map_err(BlockProcessingError::ContextBuilding)?;
 
-    block_context.oracle_witnesses = oracle_witnesses;
+    block_context.committed_data_witnesses = committed_data_witnesses;
+    block_context.committed_data_activation_block = committed_data_activation_block;
 
     // Step 3: Process transactions and extract execution information
     let tx_result = block_data.process_transactions(block_number, &rpc_client, &block_context).await?;

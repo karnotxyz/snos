@@ -26,17 +26,21 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```no_run
 //! use generate_pie::{generate_pie, ChainConfig, OsHintsConfiguration, PieGenerationInput};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let input = PieGenerationInput {
 //!         rpc_url: "https://your-starknet-node.com".to_string(),
+//!         committed_data_rpc_url: None,
+//!         layout: cairo_vm::types::layout_name::LayoutName::all_cairo,
+//!         versioned_constants: None,
 //!         blocks: vec![12345, 12346],
 //!         chain_config: ChainConfig::default(),
 //!         os_hints_config: OsHintsConfiguration::default(),
 //!         output_path: Some("output.pie".to_string()),
+//!         public_keys: None,
 //!     };
 //!
 //!     let result = generate_pie(input).await?;
@@ -78,7 +82,7 @@ use tokio::sync::Semaphore;
 // Local module imports
 use crate::constants::{DEFAULT_MAX_PARALLEL_BLOCKS, MAX_EXECUTION_STEPS_WARNING_THRESHOLD};
 use error::PieGenerationError;
-use types::{PieGenerationInput, PieGenerationResult};
+pub use types::{ChainConfig, OsHintsConfiguration, PieGenerationInput, PieGenerationResult};
 use utils::sort_abi_entries_for_deprecated_class;
 
 const MAX_PARALLEL_BLOCKS_ENV: &str = "SNOS_MAX_PARALLEL_BLOCKS";
@@ -96,6 +100,7 @@ fn read_max_parallel_blocks(default: usize) -> usize {
 // ================================================================================================
 
 mod block_processor;
+mod committed_data;
 pub mod constants;
 mod conversions;
 mod state_update;
@@ -134,17 +139,21 @@ pub mod types;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```no_run
 /// use generate_pie::{generate_pie, PieGenerationInput, ChainConfig, OsHintsConfiguration};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let input = PieGenerationInput {
 ///         rpc_url: "https://your-starknet-node.com".to_string(),
+///         committed_data_rpc_url: None,
+///         layout: cairo_vm::types::layout_name::LayoutName::all_cairo,
+///         versioned_constants: None,
 ///         blocks: vec![12345],
 ///         chain_config: ChainConfig::default(),
 ///         os_hints_config: OsHintsConfiguration::default(),
 ///         output_path: Some("output.pie".to_string()),
+///         public_keys: None,
 ///     };
 ///
 ///     let result = generate_pie(input).await?;
@@ -159,15 +168,19 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
     input.validate()?;
     info!("Input configuration validated successfully");
 
-    let oracle_witnesses = Arc::new(
-        blockifier::execution::syscalls::oracle::OracleWitnesses::new(input.os_hints_config.oracle_witnesses.clone())
-            .map_err(PieGenerationError::InvalidConfig)?,
-    );
+    let replay_witnesses = committed_data::ReplayWitnesses::new(
+        input.os_hints_config.committed_data_witnesses.clone(),
+        input.committed_data_rpc_url.as_deref(),
+    )?;
+    let committed_data_witnesses =
+        Arc::new(blockifier::execution::syscalls::committed_data::CommittedDataWitnesses::from_provider(
+            replay_witnesses.clone(),
+        ));
 
     // Initialize RPC client
     let rpc_client = RpcClient::try_new(&input.rpc_url)
         .map_err(|e| PieGenerationError::RpcClient(format!("Failed to initialize RPC client: {:?}", e)))?;
-    info!("RPC client initialized for {}", input.rpc_url);
+    info!("RPC client initialized");
 
     // Create semaphore to limit parallel execution to available CPU cores
     let default_max_parallel_blocks =
@@ -181,13 +194,12 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
     let block_tasks = input.blocks.iter().enumerate().map(|(index, block_number)| {
         let block_number = *block_number;
         let rpc_client = rpc_client.clone();
-        let is_l3 = input.chain_config.is_l3;
-        let strk_fee_token_address = input.chain_config.strk_fee_token_address;
-        let eth_fee_token_address = input.chain_config.eth_fee_token_address;
+        let chain_config = input.chain_config.clone();
         let versioned_constants = input.versioned_constants.clone();
         let total_blocks = input.blocks.len();
         let sem = semaphore.clone();
-        let oracle_witnesses = oracle_witnesses.clone();
+        let committed_data_witnesses = committed_data_witnesses.clone();
+        let committed_data_activation_block = input.os_hints_config.committed_data_activation_block;
 
         tokio::spawn(async move {
             // Acquire semaphore permit to limit concurrent execution
@@ -198,12 +210,11 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
             info!("Starting to collect block info for block {}", block_number);
             let block_info = block_processor::collect_single_block_info(
                 block_number,
-                is_l3,
-                &strk_fee_token_address,
-                &eth_fee_token_address,
+                &chain_config,
                 versioned_constants,
                 rpc_client.clone(),
-                oracle_witnesses,
+                committed_data_witnesses,
+                committed_data_activation_block,
             )
             .await
             .map_err(|e| PieGenerationError::BlockProcessing { block_number, source: Box::new(e) })?;
@@ -265,7 +276,10 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
             },
             public_keys: input.public_keys.clone(),
             rng_seed_salt: None,
-            oracle_witnesses: input.os_hints_config.oracle_witnesses.clone(),
+            committed_data_activation_block: input.os_hints_config.committed_data_activation_block,
+            committed_data_witnesses: replay_witnesses
+                .all()
+                .map_err(|error| PieGenerationError::InvalidConfig(error.to_string()))?,
         },
         os_input: StarknetOsInput { os_block_inputs, deprecated_compiled_classes, compiled_classes },
     };
@@ -333,3 +347,6 @@ pub fn parse_public_key(key: &str) -> anyhow::Result<starknet_types_core::felt::
     let trimmed = key.trim();
     Ok(starknet_types_core::felt::Felt::from_hex_unchecked(trimmed))
 }
+
+mod structured_input;
+pub use structured_input::{read_committed_data_witnesses, read_pie_input};

@@ -102,16 +102,6 @@ impl<'a> ConversionContext<'a> {
     /// * `block_number` - The block number being processed
     /// * `rpc_client` - The RPC client for fetching additional data
     /// * `transaction_receipts` - Receipts for the current block keyed by transaction hash
-    /// # Example
-    ///
-    /// ```rust
-    /// let context = ConversionContext::new(
-    ///     &chain_id,
-    ///     block_number,
-    ///     &rpc_client,
-    ///     &transaction_receipts,
-    /// );
-    /// ```
     pub fn new(
         chain_id: &'a ChainId,
         block_number: u64,

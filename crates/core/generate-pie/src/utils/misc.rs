@@ -43,12 +43,15 @@ pub fn felt_to_u128(felt: &Felt) -> Result<u128, FeltConversionError> {
 /// ```rust,no_run
 /// use generate_pie::utils::load_versioned_constants;
 ///
+/// # fn example() -> Result<(), String> {
 /// let constants = load_versioned_constants(None)?;
 /// assert!(constants.is_none());
 ///
 /// // Load from file
 /// let constants = load_versioned_constants(Some("path/to/constants.json"))?;
 /// assert!(constants.is_some());
+/// # Ok(())
+/// # }
 /// ```
 pub fn load_versioned_constants(path: Option<&str>) -> Result<Option<VersionedConstants>, String> {
     match path {

@@ -190,3 +190,40 @@ cargo run --release -p prove_block -- --block-number 200000 --rpc-provider http:
 ## 📜 License
 
 This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
+
+## Committed Data Reads (appchain extension)
+
+This fork supports `get_value(root, index)` at
+`starknet_keccak("committed_data_v1")`. A value is a full felt, not an Oracle-specific
+price. The application must obtain the root from its authenticated storage and
+control publication and freshness. The leaf binds `COMMITTED_DATA_V1`, the calling
+contract's storage address, the index and the value. The Cairo OS independently
+verifies the ordered, 19-level Poseidon path and the returned value.
+
+The extension is disabled by default. The inclusive activation height must match
+Madara, SNOS, the aggregator and the accepted settlement configuration. Activation
+changes the OS configuration hash; this fork also changes the OS program hash.
+Existing upstream or earlier Oracle-PoC settlement artifacts cannot be reused.
+
+`generate_pie(PieGenerationInput)` accepts witnesses directly in
+`os_hints_config.committed_data_witnesses`. The binary accepts the complete typed
+request as JSON with `generate-pie --input-stdin`; it rejects competing CLI options.
+Alternatively, set `committed_data_rpc_url` in the generation input (or
+`--committed-data-rpc-url` on the CLI) to an operator-controlled Madara admin RPC.
+Replay fetches only the witnesses actually read and passes the collected witnesses
+to the OS in memory. Set `os_hints_config.committed_data_activation_block` explicitly
+(or `--committed-data-activation-block`). A path-based witness file remains a
+standalone CLI convenience, not a requirement for orchestration.
+
+Version one supports up to 524,288 indexed values per root and 65,536 distinct
+witnesses per generation request. Structured JSON is limited to 128 MiB; each
+witness response is limited to 8 KiB and a 30-second request timeout. Oversized,
+malformed, duplicate or mismatching witnesses fail. Missing data also fails replay;
+it is never replaced with zero or converted into a provable arbitrary revert.
+Configure batch sizes and retention accordingly. Every proving node must retain or
+be able to retrieve historical datasets for the roots it replays. Committing a root
+does not make the dataset available or its underlying real-world values truthful.
+
+The current version conservatively charges 1,000,000 additional Sierra gas per
+successful read and accounts for OS work in Blockifier. Recalibrating these protocol
+constants requires coordinated execution/prover changes and new validation.
