@@ -201,8 +201,11 @@ contract's storage address, the index and the value. The Cairo OS independently
 verifies the ordered, 19-level Poseidon path and the returned value.
 
 The extension is disabled by default. The inclusive activation height must match
-Madara, SNOS, the aggregator and the accepted settlement configuration. Activation
-changes the OS configuration hash; this fork also changes the OS program hash.
+Madara, SNOS, the aggregator and the accepted settlement configuration. The bounded approved-adapter list (`os_hints_config.committed_data_readers`, or
+`--committed-data-readers 0x123,0x456`) must also match. It contains at most 64 unique,
+nonzero storage addresses; an empty list denies all callers, including after activation.
+Activation and the canonical adapter list
+change the OS configuration hash; this fork also changes the OS program hash.
 Existing upstream or earlier Oracle-PoC settlement artifacts cannot be reused.
 
 `generate_pie(PieGenerationInput)` accepts witnesses directly in
@@ -227,3 +230,12 @@ does not make the dataset available or its underlying real-world values truthful
 The current version conservatively charges 1,000,000 additional Sierra gas per
 successful read and accounts for OS work in Blockifier. Recalibrating these protocol
 constants requires coordinated execution/prover changes and new validation.
+
+Approved adapters must validate both authorized/fresh roots and valid indices before
+calling this primitive. They must not expose arbitrary root/index forwarding. Publish
+roots only after their complete datasets are durably imported and replicated. Otherwise
+an attacker can deliberately trigger an availability failure after expensive execution,
+causing an uncharged transaction rejection. Unapproved callers instead receive a normal,
+provable revert before any dataset lookup. Adapter code and upgrade/publication authority
+are therefore part of the appchain's operational security boundary. Membership verification
+still runs in Cairo for every successful read; the policy does not trust host-returned values.

@@ -63,7 +63,7 @@ def main():
         wire_witness[key] = hex(wire_witness[key])
     wire_witness['siblings'] = [hex(value) for value in wire_witness['siblings']]
     (args.output / 'witnesses.json').write_text(json.dumps([wire_witness], indent=2))
-    cases = {'valid': base}
+    cases = {'valid': base, 'valid_max_readers': dict(base, readers=list(range(1,64)) + [base['publisher']]), 'unapproved_reader': dict(base, readers=[]), 'oversized_policy': dict(base, readers=list(range(1,65)) + [base['publisher']])}
     for key in ['root', 'publisher', 'index', 'value', 'response_value']:
         cases['wrong_' + key] = dict(base, **{key: base[key] + 1})
     cases['wrong_sibling'] = copy.deepcopy(base)
@@ -88,8 +88,8 @@ def main():
         cmd = [str(tools / 'cairo-run'), '--program', str(program_file),
                '--program_input', str(input_file), '--layout', 'recursive_with_poseidon',
                '--secure_run', '--print_info', '--print_output']
-        if name == 'valid':
-            cmd += ['--cairo_pie_output', str(args.output / 'committed_data-syscall.pie.zip')]
+        if name.startswith('valid'):
+            cmd += ['--cairo_pie_output', str(args.output / (name + '.pie.zip'))]
         result = subprocess.run(cmd, text=True, capture_output=True)
         (args.output / (name + '.log')).write_text(result.stdout + result.stderr)
         ok = result.returncode == 0
@@ -100,7 +100,7 @@ def main():
         print(name, 'PASS' if passed else 'FAIL', flush=True)
         if not passed:
             print((result.stdout + result.stderr)[-2500:])
-    pie = args.output / 'committed_data-syscall.pie.zip'
+    pie = args.output / 'valid_max_readers.pie.zip'
     if pie.exists():
         with zipfile.ZipFile(pie) as archive:
             resources = json.loads(archive.read('execution_resources.json'))

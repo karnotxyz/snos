@@ -16,7 +16,7 @@
 ///     debug_mode: true,
 ///     full_output: true,
 ///     use_kzg_da: false,
-///     committed_data_activation_block: None, committed_data_witnesses: Vec::new(),
+///     committed_data_activation_block: None, committed_data_readers: Default::default(), committed_data_witnesses: Vec::new(),
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -30,6 +30,8 @@ pub struct OsHintsConfiguration {
     pub use_kzg_da: bool,
     /// Inclusive extension activation height; must match the chain settlement configuration.
     pub committed_data_activation_block: Option<u64>,
+    /// Approved adapter storage addresses; empty denies every caller. Bound into the OS configuration.
+    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
     /// Private committed_data witnesses keyed by root, publisher and index. Never included in tx calldata.
     #[serde(deserialize_with = "blockifier::execution::syscalls::committed_data::deserialize_witnesses")]
     pub committed_data_witnesses: Vec<blockifier::execution::syscalls::committed_data::CommittedDataWitness>,
@@ -50,6 +52,7 @@ impl Default for OsHintsConfiguration {
             full_output: true,
             use_kzg_da: false,
             committed_data_activation_block: None,
+            committed_data_readers: Default::default(),
             committed_data_witnesses: Vec::new(),
         }
     }
@@ -63,6 +66,7 @@ impl OsHintsConfiguration {
                 full_output: false,
                 use_kzg_da: false,
                 committed_data_activation_block: None,
+                committed_data_readers: Default::default(),
                 committed_data_witnesses: Vec::new(),
             }
         } else {
@@ -71,6 +75,7 @@ impl OsHintsConfiguration {
                 full_output: true,
                 use_kzg_da: false,
                 committed_data_activation_block: None,
+                committed_data_readers: Default::default(),
                 committed_data_witnesses: Vec::new(),
             }
         }
