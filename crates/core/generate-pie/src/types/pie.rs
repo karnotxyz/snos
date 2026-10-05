@@ -87,12 +87,10 @@ impl PieGenerationInput {
         {
             return Err(PieGenerationError::InvalidConfig("Too many committed-data witnesses".into()));
         }
-        if self.os_hints_config.committed_data_activation_block.is_none()
+        if !self.os_hints_config.use_committed_data
             && (!self.os_hints_config.committed_data_witnesses.is_empty() || self.committed_data_rpc_url.is_some())
         {
-            return Err(PieGenerationError::InvalidConfig(
-                "Witnesses require explicit committed-data activation".into(),
-            ));
+            return Err(PieGenerationError::InvalidConfig("Witnesses require use_committed_data=true".into()));
         }
 
         // Validate chain configuration

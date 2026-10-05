@@ -24,13 +24,13 @@ COMMITTED_DATA_ADDRESS = int.from_bytes(
 
 
 def fixture():
-    publisher, index, value = 12345, 499999, 312345000000
+    index, value = 499999, 312345000000
     # A fixed 19-level witness; siblings commit to other subtrees.
     siblings = [poseidon_hash(i, 42) for i in range(HEIGHT)]
-    node = poseidon_hash_many([DOMAIN, publisher, index, value])
+    node = poseidon_hash_many([DOMAIN, index, value])
     for depth, sibling in enumerate(siblings):
         node = poseidon_hash(sibling, node) if (index >> depth) & 1 else poseidon_hash(node, sibling)
-    return dict(address=COMMITTED_DATA_ADDRESS, root=node, publisher=publisher, index=index, value=value,
+    return dict(address=COMMITTED_DATA_ADDRESS, root=node, index=index, value=value,
                 response_value=value, siblings=siblings)
 
 
@@ -59,12 +59,12 @@ def main():
     program_file.write_text(json.dumps(program))
     base = fixture()
     wire_witness = {k: v for k, v in base.items() if k not in ('address', 'response_value')}
-    for key in ['root', 'publisher', 'value']:
+    for key in ['root', 'value']:
         wire_witness[key] = hex(wire_witness[key])
     wire_witness['siblings'] = [hex(value) for value in wire_witness['siblings']]
     (args.output / 'witnesses.json').write_text(json.dumps([wire_witness], indent=2))
-    cases = {'valid': base, 'valid_max_readers': dict(base, readers=list(range(1,64)) + [base['publisher']]), 'unapproved_reader': dict(base, readers=[]), 'oversized_policy': dict(base, readers=list(range(1,65)) + [base['publisher']])}
-    for key in ['root', 'publisher', 'index', 'value', 'response_value']:
+    cases = {'valid': base, 'disabled': dict(base, use_committed_data=False)}
+    for key in ['root', 'index', 'value', 'response_value']:
         cases['wrong_' + key] = dict(base, **{key: base[key] + 1})
     cases['wrong_sibling'] = copy.deepcopy(base)
     cases['wrong_sibling']['siblings'][9] += 1
@@ -72,7 +72,7 @@ def main():
     cases['out_of_range_index'] = dict(base, index=2**HEIGHT)
     cases['negative_index'] = dict(base, index=PRIME - 1)
     full_felt = dict(base, value=PRIME - 1, response_value=PRIME - 1)
-    node = poseidon_hash_many([DOMAIN, full_felt['publisher'], full_felt['index'], full_felt['value']])
+    node = poseidon_hash_many([DOMAIN, full_felt['index'], full_felt['value']])
     for depth, sibling in enumerate(full_felt['siblings']):
         node = poseidon_hash(sibling, node) if (full_felt['index'] >> depth) & 1 else poseidon_hash(node, sibling)
     full_felt['root'] = node
@@ -100,7 +100,7 @@ def main():
         print(name, 'PASS' if passed else 'FAIL', flush=True)
         if not passed:
             print((result.stdout + result.stderr)[-2500:])
-    pie = args.output / 'valid_max_readers.pie.zip'
+    pie = args.output / 'valid.pie.zip'
     if pie.exists():
         with zipfile.ZipFile(pie) as archive:
             resources = json.loads(archive.read('execution_resources.json'))

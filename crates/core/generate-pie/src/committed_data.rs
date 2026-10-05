@@ -12,7 +12,7 @@ use starknet_types_core::felt::Felt;
 
 use crate::error::PieGenerationError;
 
-type Key = (Felt, Felt, u32);
+type Key = (Felt, u32);
 const MAX_RESPONSE_BYTES: usize = 8192;
 
 /// One request at a time on cache misses; hot reads never wait on network I/O.
@@ -49,7 +49,7 @@ impl ReplayWitnesses {
             })
             .transpose()?;
         Ok(Arc::new(Self {
-            witnesses: Mutex::new(witnesses.into_iter().map(|w| ((w.root, w.publisher, w.index), w)).collect()),
+            witnesses: Mutex::new(witnesses.into_iter().map(|w| ((w.root, w.index), w)).collect()),
             fetch: Mutex::new(()),
             remote,
         }))
@@ -71,7 +71,7 @@ impl ReplayWitnesses {
             .post(url.clone())
             .json(&serde_json::json!({
                 "jsonrpc": "2.0", "id": 1, "method": "madara_getCommittedDataWitness",
-                "params": [key.0, key.1, key.2]
+                "params": [key.0, key.1]
             }))
             .send()
             .await
@@ -96,8 +96,8 @@ impl ReplayWitnesses {
 }
 
 impl CommittedDataProvider for ReplayWitnesses {
-    fn value(&self, root: Felt, publisher: Felt, index: u32) -> Result<Option<Felt>, CommittedDataError> {
-        let key = (root, publisher, index);
+    fn value(&self, root: Felt, index: u32) -> Result<Option<Felt>, CommittedDataError> {
+        let key = (root, index);
         if let Some(value) = self.cached(key)? {
             return Ok(Some(value));
         }
@@ -152,7 +152,7 @@ fn parse_response(bytes: &[u8], key: Key) -> Result<Option<CommittedDataWitness>
         return Err(provider_error("Witness RPC response mismatch"));
     }
     if let Some(witness) = &response.result {
-        if (witness.root, witness.publisher, witness.index) != key || !witness.verify() {
+        if (witness.root, witness.index) != key || !witness.verify() {
             return Err(CommittedDataError::InvalidWitness);
         }
     }
@@ -173,12 +173,12 @@ mod tests {
 
     #[test]
     fn rpc_cannot_substitute_a_different_tuple_or_value() {
-        let tree = CommittedDataSet::new(Felt::ONE, vec![Felt::MAX]).unwrap();
+        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
         let witness = tree.witness(0).unwrap();
-        let key = (witness.root, witness.publisher, witness.index);
+        let key = (witness.root, witness.index);
         let envelope = |w| serde_json::to_vec(&serde_json::json!({"jsonrpc":"2.0", "id":1, "result":w})).unwrap();
         assert_eq!(parse_response(&envelope(witness.clone()), key).unwrap(), Some(witness.clone()));
-        assert!(parse_response(&envelope(witness.clone()), (key.0, Felt::TWO, 0)).is_err());
+        assert!(parse_response(&envelope(witness.clone()), (key.0, 1)).is_err());
         let mut bad = witness;
         bad.value = Felt::ZERO;
         assert!(parse_response(&envelope(bad), key).is_err());
@@ -188,19 +188,27 @@ mod tests {
 
     #[test]
     fn inline_witnesses_work_without_network() {
-        let tree = CommittedDataSet::new(Felt::ONE, vec![Felt::MAX]).unwrap();
+        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
         let provider = ReplayWitnesses::new(vec![tree.witness(0).unwrap()], None).unwrap();
-        assert_eq!(provider.value(tree.root(), Felt::ONE, 0).unwrap(), Some(Felt::MAX));
-        assert_eq!(provider.value(tree.root(), Felt::ONE, 1).unwrap(), None);
+        assert_eq!(provider.value(tree.root(), 0).unwrap(), Some(Felt::MAX));
+        assert_eq!(provider.value(tree.root(), 1).unwrap(), None);
         assert_eq!(provider.all().unwrap().len(), 1);
     }
+    #[test]
+    fn duplicate_root_index_input_is_rejected() {
+        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+        let witness = tree.witness(0).unwrap();
+        assert!(ReplayWitnesses::new(vec![witness.clone(), witness], None).is_err());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_rpc_response_is_cached_and_collected_for_os() {
         use std::io::{Read, Write};
-        let tree = CommittedDataSet::new(Felt::ONE, vec![Felt::MAX]).unwrap();
+        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
         let witness = tree.witness(0).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let expected_params = serde_json::json!([tree.root(), 0]);
         let body = serde_json::to_string(&serde_json::json!({"jsonrpc":"2.0","id":1,"result":witness})).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -224,6 +232,7 @@ mod tests {
                         let json: serde_json::Value =
                             serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
                         assert_eq!(json["method"], "madara_getCommittedDataWitness");
+                        assert_eq!(json["params"], expected_params);
                         break;
                     }
                 }
@@ -237,7 +246,7 @@ mod tests {
             .map(|_| {
                 let cached = provider.clone();
                 tokio::spawn(async move {
-                    assert_eq!(cached.value(root, Felt::ONE, 0).unwrap(), Some(Felt::MAX));
+                    assert_eq!(cached.value(root, 0).unwrap(), Some(Felt::MAX));
                 })
             })
             .collect();

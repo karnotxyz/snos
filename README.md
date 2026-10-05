@@ -196,17 +196,73 @@ This project is licensed under the MIT License. See the [LICENSE](./LICENSE) fil
 This fork supports `get_value(root, index)` at
 `starknet_keccak("committed_data_v1")`. A value is a full felt, not an Oracle-specific
 price. The application must obtain the root from its authenticated storage and
-control publication and freshness. The leaf binds `COMMITTED_DATA_V1`, the calling
-contract's storage address, the index and the value. The Cairo OS independently
-verifies the ordered, 19-level Poseidon path and the returned value.
+control publication and freshness. The leaf binds `COMMITTED_DATA_V1`, the index
+and the value. Dataset roots and witnesses are shared across contracts; they are
+not bound to a publisher address. The Cairo OS independently verifies the ordered,
+19-level Poseidon path and the returned value.
 
-The extension is disabled by default. The inclusive activation height must match
-Madara, SNOS, the aggregator and the accepted settlement configuration. The bounded approved-adapter list (`os_hints_config.committed_data_readers`, or
-`--committed-data-readers 0x123,0x456`) must also match. It contains at most 64 unique,
-nonzero storage addresses; an empty list denies all callers, including after activation.
-Activation and the canonical adapter list
-change the OS configuration hash; this fork also changes the OS program hash.
-Existing upstream or earlier Oracle-PoC settlement artifacts cannot be reused.
+Supported transaction scope: committed-data reads may only execute within account
+transactions. L1-handler transactions must never reach this primitive, either
+directly or indirectly through an adapter or another contract. Adapter
+contracts, their callers and future upgrades must preserve this restriction. This
+is an application-enforced constraint, not a runtime rejection of L1 handlers.
+The missing-witness rejection guard covers legacy and current account transactions;
+the L1-handler path does not have the equivalent guard and can accept an availability
+failure as a reverted transaction. L1-handler support requires that guard and
+execution/replay regression coverage before this constraint can be relaxed.
+
+Failure and recovery behavior:
+
+- An ordinary deterministic contract revert is supported: replay must reproduce the
+  original execution with the same historical state, configuration and committed
+  data. A revert alone does not indicate a committed-data failure.
+- If an L1 handler reaches an adapter and its witness is unavailable during
+  block production, the current L1-handler path can record an accepted reverted
+  transaction. If the witness becomes available for SNOS replay, execution may
+  instead succeed, changing receipts, commitments or state. Replay consistency
+  checks or Cairo constraints then fail; detecting the mismatch does not repair the
+  original block. This can stall proving. L1-handler use remains unsupported even
+  when data is available.
+- If the original execution was valid and only the proving node lacks data, restore
+  the historical witnesses for the exact root and index,
+  or restore access to a witness RPC that serves them, then retry the same input.
+  Enable `use_committed_data` for replay and proving. Valid witnesses
+  resolve the availability failure; all remaining replay and proof checks must
+  still pass.
+- If the original block recorded an availability-driven L1-handler revert, supplying
+  data later is not a guaranteed recovery: it can change the execution outcome.
+  Neither withholding data nor forcing a revert is a valid substitute for proving
+  the original transition. Stop and investigate the block; recovery may require
+  chain-specific rollback/re-execution if permitted by its finality and settlement
+  state. Do not change receipts, disable checks or bypass execution permission to
+  make it pass.
+
+Prevent this failure by keeping committed-data reads within account transactions,
+preserving that boundary through indirect calls and upgrades, and retaining the
+authenticated historical data needed by both execution and proving nodes.
+
+`os_hints_config.use_committed_data` defaults to `false`. Set it to `true` to
+permit reads during both Blockifier replay and Cairo OS proving. A disabled read
+rejects the account transaction/proof; it never falls back to ordinary contract
+execution or becomes an accepted account-transaction revert. The special address
+is permanently reserved, including for deployment, regardless of this flag.
+
+This flag is an execution permission, not a consensus activation policy. It does
+not change the OS configuration hash or the public output format. Activation-height
+and reader-list inputs have been removed and are rejected in structured input.
+Each calling contract must still validate the root's authorization and freshness.
+The aggregator needs no committed-data flag.
+
+SNOS pins sequencer `0149bf12a9184edd07241c0d3465a85a1a036446`, which supplies the
+regenerated OS, virtual-OS and aggregator programs and hashes. The same binary can
+process ordinary blocks with reads disabled and committed-data blocks with reads
+enabled, subject to the protocol versions supported by that dependency. This does
+not make it interchangeable with historical OS program hashes. Settlement/prover
+configuration must accept the pinned programs; clients using virtual-OS proof facts
+must separately update their allowed program hashes. Existing publisher-bound
+snapshots require regenerated roots and witnesses, and the new roots must be
+published in authenticated contract state. They cannot replace old roots during
+historical replay; retain the matching older proving stack for those blocks.
 
 `generate_pie(PieGenerationInput)` accepts witnesses directly in
 `os_hints_config.committed_data_witnesses`. The binary accepts the complete typed
@@ -214,9 +270,14 @@ request as JSON with `generate-pie --input-stdin`; it rejects competing CLI opti
 Alternatively, set `committed_data_rpc_url` in the generation input (or
 `--committed-data-rpc-url` on the CLI) to an operator-controlled Madara admin RPC.
 Replay fetches only the witnesses actually read and passes the collected witnesses
-to the OS in memory. Set `os_hints_config.committed_data_activation_block` explicitly
-(or `--committed-data-activation-block`). A path-based witness file remains a
-standalone CLI convenience, not a requirement for orchestration.
+to the OS in memory. Set `os_hints_config.use_committed_data` to `true`
+(or `--use-committed-data` / `SNOS_USE_COMMITTED_DATA=true`). A path-based witness
+file remains a standalone CLI convenience, not a requirement for orchestration. Both `generate-pie`
+and `rpc-replay` accept `--use-committed-data`, `--committed-data-rpc-url` and
+`--committed-data-witnesses-path`. Witness objects contain only `root`, `index`,
+`value` and the 19-element `siblings` array. RPC requests use
+`madara_getCommittedDataWitness(root, index)`. Repeated reads share one cached
+witness per `(root, index)`; duplicate tuples in supplied witness arrays are rejected.
 
 Version one supports up to 524,288 indexed values per root and 65,536 distinct
 witnesses per generation request. Structured JSON is limited to 128 MiB; each
@@ -231,11 +292,10 @@ The current version conservatively charges 1,000,000 additional Sierra gas per
 successful read and accounts for OS work in Blockifier. Recalibrating these protocol
 constants requires coordinated execution/prover changes and new validation.
 
-Approved adapters must validate both authorized/fresh roots and valid indices before
+Adapters must validate both authorized/fresh roots and valid indices before
 calling this primitive. They must not expose arbitrary root/index forwarding. Publish
 roots only after their complete datasets are durably imported and replicated. Otherwise
 an attacker can deliberately trigger an availability failure after expensive execution,
-causing an uncharged transaction rejection. Unapproved callers instead receive a normal,
-provable revert before any dataset lookup. Adapter code and upgrade/publication authority
+causing an uncharged transaction rejection. Adapter code and upgrade/publication authority
 are therefore part of the appchain's operational security boundary. Membership verification
-still runs in Cairo for every successful read; the policy does not trust host-returned values.
+still runs in Cairo for every successful read; the proof does not trust host-returned values.

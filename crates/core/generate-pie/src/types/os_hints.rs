@@ -16,7 +16,7 @@
 ///     debug_mode: true,
 ///     full_output: true,
 ///     use_kzg_da: false,
-///     committed_data_activation_block: None, committed_data_readers: Default::default(), committed_data_witnesses: Vec::new(),
+///     use_committed_data: false, committed_data_witnesses: Vec::new(),
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -28,11 +28,10 @@ pub struct OsHintsConfiguration {
     pub full_output: bool,
     /// Whether to use KZG (Kate-Zaverucha-Goldberg) data availability mode.
     pub use_kzg_da: bool,
-    /// Inclusive extension activation height; must match the chain settlement configuration.
-    pub committed_data_activation_block: Option<u64>,
-    /// Approved adapter storage addresses; empty denies every caller. Bound into the OS configuration.
-    pub committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
-    /// Private committed_data witnesses keyed by root, publisher and index. Never included in tx calldata.
+    /// Permit committed-data reads during replay and proving. Defaults to false.
+    /// This input is not included in the OS config hash or public output.
+    pub use_committed_data: bool,
+    /// Private committed_data witnesses keyed by root and index. Never included in tx calldata.
     #[serde(deserialize_with = "blockifier::execution::syscalls::committed_data::deserialize_witnesses")]
     pub committed_data_witnesses: Vec<blockifier::execution::syscalls::committed_data::CommittedDataWitness>,
 }
@@ -51,8 +50,7 @@ impl Default for OsHintsConfiguration {
             debug_mode: true,
             full_output: true,
             use_kzg_da: false,
-            committed_data_activation_block: None,
-            committed_data_readers: Default::default(),
+            use_committed_data: false,
             committed_data_witnesses: Vec::new(),
         }
     }
@@ -65,8 +63,7 @@ impl OsHintsConfiguration {
                 debug_mode: true,
                 full_output: false,
                 use_kzg_da: false,
-                committed_data_activation_block: None,
-                committed_data_readers: Default::default(),
+                use_committed_data: false,
                 committed_data_witnesses: Vec::new(),
             }
         } else {
@@ -74,8 +71,7 @@ impl OsHintsConfiguration {
                 debug_mode: true,
                 full_output: true,
                 use_kzg_da: false,
-                committed_data_activation_block: None,
-                committed_data_readers: Default::default(),
+                use_committed_data: false,
                 committed_data_witnesses: Vec::new(),
             }
         }
