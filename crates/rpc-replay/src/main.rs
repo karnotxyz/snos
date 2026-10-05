@@ -156,6 +156,18 @@ struct Args {
     #[arg(long, required = true)]
     rpc_url: String,
 
+    /// Permit committed-data reads during replay and proving (account transactions only).
+    #[arg(long, env = "SNOS_USE_COMMITTED_DATA")]
+    use_committed_data: bool,
+
+    /// Madara witness RPC serving historical committed-data roots.
+    #[arg(long, env = "SNOS_COMMITTED_DATA_RPC_URL", requires = "use_committed_data")]
+    committed_data_rpc_url: Option<String>,
+
+    /// Optional bounded JSON witness array for replay without a witness RPC.
+    #[arg(long, env = "SNOS_COMMITTED_DATA_WITNESSES_PATH", requires = "use_committed_data")]
+    committed_data_witnesses_path: Option<std::path::PathBuf>,
+
     /// Layout to be used for SNOS
     #[arg(long, default_value = "all_cairo")]
     layout: String,
@@ -578,6 +590,10 @@ async fn check_blocks_exist(
 /// Process a set of 1 block and generate PIE
 async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, ProcessError> {
     let output_filename = format!("cairo_pie_blocks_{}.zip", blocks[0]);
+    let output_path = args
+        .output_dir
+        .as_deref()
+        .map(|output_dir| Path::new(output_dir).join(&output_filename).to_string_lossy().into_owned());
 
     // Load versioned constants from file if provided
     // Note: Non-fatal error handling - if loading fails, we fall back to auto-detection
@@ -590,8 +606,15 @@ async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, Proces
         }
     };
 
+    let mut os_hints_config = OsHintsConfiguration::default_with_is_l3(args.is_l3);
+    os_hints_config.use_committed_data = args.use_committed_data;
+    if let Some(path) = &args.committed_data_witnesses_path {
+        let file = fs::File::open(path).map_err(|error| ProcessError::Regular(error.into()))?;
+        os_hints_config.committed_data_witnesses =
+            generate_pie::read_committed_data_witnesses(file).map_err(ProcessError::Regular)?;
+    }
     let input = PieGenerationInput {
-        committed_data_rpc_url: None,
+        committed_data_rpc_url: args.committed_data_rpc_url.clone(),
         rpc_url: args.rpc_url.clone(),
         blocks: blocks.to_vec(),
         chain_config: ChainConfig::new(
@@ -600,8 +623,8 @@ async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, Proces
             &args.eth_fee_token_address,
             args.is_l3,
         ),
-        os_hints_config: OsHintsConfiguration::default_with_is_l3(args.is_l3),
-        output_path: args.output_dir.clone(),
+        os_hints_config,
+        output_path,
         layout: parse_layout(&args.layout)
             .map_err(|e| ProcessError::Panic(format!("Failed to parse layout: {}", e)))?,
         versioned_constants,
@@ -740,4 +763,28 @@ async fn write_error_to_file(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequential_block_set_respects_optional_end_block() {
+        assert_eq!(sequential_block_set(100, 5, Some(102)), Some(vec![100, 101, 102]));
+        assert_eq!(sequential_block_set(103, 5, Some(102)), None);
+        assert_eq!(sequential_block_set(100, 2, None), Some(vec![100, 101]));
+    }
+
+    #[test]
+    fn committed_data_cli_requires_explicit_permission_for_witness_sources() {
+        let base = ["rpc-replay", "--rpc-url", "http://localhost", "--log-dir", "/tmp"];
+        assert!(!Args::try_parse_from(base).unwrap().use_committed_data);
+        for option in ["--committed-data-rpc-url", "--committed-data-witnesses-path"] {
+            assert!(Args::try_parse_from(base.into_iter().chain([option, "input"])).is_err());
+            let parsed =
+                Args::try_parse_from(base.into_iter().chain(["--use-committed-data", option, "input"])).unwrap();
+            assert!(parsed.use_committed_data);
+        }
+    }
 }

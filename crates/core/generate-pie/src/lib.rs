@@ -199,8 +199,7 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
         let total_blocks = input.blocks.len();
         let sem = semaphore.clone();
         let committed_data_witnesses = committed_data_witnesses.clone();
-        let committed_data_activation_block = input.os_hints_config.committed_data_activation_block;
-        let committed_data_readers = input.os_hints_config.committed_data_readers.clone();
+        let use_committed_data = input.os_hints_config.use_committed_data;
 
         tokio::spawn(async move {
             // Acquire semaphore permit to limit concurrent execution
@@ -215,8 +214,7 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
                 versioned_constants,
                 rpc_client.clone(),
                 committed_data_witnesses,
-                committed_data_activation_block,
-                committed_data_readers,
+                use_committed_data,
             )
             .await
             .map_err(|e| PieGenerationError::BlockProcessing { block_number, source: Box::new(e) })?;
@@ -278,8 +276,7 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
             },
             public_keys: input.public_keys.clone(),
             rng_seed_salt: None,
-            committed_data_activation_block: input.os_hints_config.committed_data_activation_block,
-            committed_data_readers: input.os_hints_config.committed_data_readers.clone(),
+            use_committed_data: input.os_hints_config.use_committed_data,
             committed_data_witnesses: replay_witnesses
                 .all()
                 .map_err(|error| PieGenerationError::InvalidConfig(error.to_string()))?,

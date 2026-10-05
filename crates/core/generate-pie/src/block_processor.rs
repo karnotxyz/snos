@@ -74,8 +74,7 @@ pub async fn collect_single_block_info(
     versioned_constants: Option<blockifier::blockifier_versioned_constants::VersionedConstants>,
     rpc_client: RpcClient,
     committed_data_witnesses: std::sync::Arc<blockifier::execution::syscalls::committed_data::CommittedDataWitnesses>,
-    committed_data_activation_block: Option<u64>,
-    committed_data_readers: starknet_api::committed_data::CommittedDataReaders,
+    use_committed_data: bool,
 ) -> Result<BlockInfoResult, BlockProcessingError> {
     info!("Starting block info collection for block {}", block_number);
 
@@ -93,8 +92,7 @@ pub async fn collect_single_block_info(
         .map_err(BlockProcessingError::ContextBuilding)?;
 
     block_context.committed_data_witnesses = committed_data_witnesses;
-    block_context.committed_data_activation_block = committed_data_activation_block;
-    block_context.committed_data_readers = committed_data_readers;
+    block_context.use_committed_data = use_committed_data;
 
     // Step 3: Process transactions and extract execution information
     let tx_result = block_data.process_transactions(block_number, &rpc_client, &block_context).await?;
