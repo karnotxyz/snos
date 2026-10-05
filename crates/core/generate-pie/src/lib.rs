@@ -162,7 +162,7 @@ pub mod types;
 ///     Ok(())
 /// }
 /// ```
-pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResult, PieGenerationError> {
+pub async fn generate_pie(mut input: PieGenerationInput) -> Result<PieGenerationResult, PieGenerationError> {
     info!("Starting PIE generation for {} blocks: {:?}", input.blocks.len(), input.blocks);
 
     // Validate input configuration
@@ -170,7 +170,7 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
     info!("Input configuration validated successfully");
 
     let replay_witnesses = committed_data::ReplayWitnesses::new(
-        input.os_hints_config.committed_data_witnesses.clone(),
+        std::mem::take(&mut input.os_hints_config.committed_data_witnesses),
         input.committed_data_rpc_url.as_deref(),
     )?;
     let committed_data_witnesses =
@@ -279,7 +279,7 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
             rng_seed_salt: None,
             use_committed_data: input.os_hints_config.use_committed_data,
             committed_data_witnesses: replay_witnesses
-                .all()
+                .take_all()
                 .map_err(|error| PieGenerationError::InvalidConfig(error.to_string()))?,
         },
         os_input: StarknetOsInput { os_block_inputs, deprecated_compiled_classes, compiled_classes },
