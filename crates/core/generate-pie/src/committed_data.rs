@@ -4,8 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use blockifier::execution::syscalls::committed_data::{
-    CommittedDataError, CommittedDataProvider, CommittedDataWitness, CommittedDataWitnesses,
-    MAX_COMMITTED_DATA_WITNESSES,
+    CommittedDataError, CommittedDataProvider, CommittedDataWitness, MAX_COMMITTED_DATA_WITNESSES,
 };
 use serde::Deserialize;
 use starknet_types_core::felt::Felt;
@@ -31,7 +30,18 @@ impl std::fmt::Debug for ReplayWitnesses {
 
 impl ReplayWitnesses {
     pub fn new(witnesses: Vec<CommittedDataWitness>, endpoint: Option<&str>) -> Result<Arc<Self>, PieGenerationError> {
-        CommittedDataWitnesses::new(witnesses.clone()).map_err(invalid_config)?;
+        if witnesses.len() > MAX_COMMITTED_DATA_WITNESSES {
+            return Err(invalid_config(CommittedDataError::TooManyWitnesses));
+        }
+        let mut validated = BTreeMap::new();
+        for witness in witnesses {
+            if !witness.verify() {
+                return Err(invalid_config(CommittedDataError::InvalidWitness));
+            }
+            if validated.insert((witness.root, witness.index), witness).is_some() {
+                return Err(invalid_config(CommittedDataError::DuplicateWitness));
+            }
+        }
         let remote = endpoint
             .map(|endpoint| {
                 let url =
@@ -48,15 +58,16 @@ impl ReplayWitnesses {
                 Ok((client, url))
             })
             .transpose()?;
-        Ok(Arc::new(Self {
-            witnesses: Mutex::new(witnesses.into_iter().map(|w| ((w.root, w.index), w)).collect()),
-            fetch: Mutex::new(()),
-            remote,
-        }))
+        Ok(Arc::new(Self { witnesses: Mutex::new(validated), fetch: Mutex::new(()), remote }))
     }
 
-    pub fn all(&self) -> Result<Vec<CommittedDataWitness>, CommittedDataError> {
-        Ok(self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.values().cloned().collect())
+    /// Moves collected witnesses into OS input after every replay worker has finished.
+    pub fn take_all(&self) -> Result<Vec<CommittedDataWitness>, CommittedDataError> {
+        let witnesses = {
+            let mut cache = self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?;
+            std::mem::take(&mut *cache)
+        };
+        Ok(witnesses.into_values().collect())
     }
 
     fn cached(&self, key: Key) -> Result<Option<Felt>, CommittedDataError> {
@@ -75,17 +86,15 @@ impl ReplayWitnesses {
             }))
             .send()
             .await
-            .map_err(|_| provider_error("Witness RPC request failed"))?;
+            .map_err(|error| transport_error("request", error))?;
         if !response.status().is_success() {
-            return Err(provider_error("Witness RPC returned a failure status"));
+            return Err(provider_error(format!("Witness RPC returned HTTP {}", response.status().as_u16())));
         }
         if response.content_length().is_some_and(|len| len > MAX_RESPONSE_BYTES as u64) {
             return Err(provider_error("Oversized witness RPC response"));
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) =
-            response.chunk().await.map_err(|_| provider_error("Cannot read witness RPC response"))?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|error| transport_error("response body", error))? {
             if chunk.len() > MAX_RESPONSE_BYTES - bytes.len() {
                 return Err(provider_error("Oversized witness RPC response"));
             }
@@ -159,7 +168,23 @@ fn parse_response(bytes: &[u8], key: Key) -> Result<Option<CommittedDataWitness>
     Ok(response.result)
 }
 
-fn provider_error(message: &str) -> CommittedDataError {
+// Keep only safe categories: reqwest's Display/Debug/source chain can contain access-bearing URLs.
+fn transport_error(operation: &str, error: reqwest::Error) -> CommittedDataError {
+    let category = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connection failure"
+    } else if error.is_body() {
+        "body transfer failure"
+    } else if error.is_decode() {
+        "decoding failure"
+    } else {
+        "transport failure"
+    };
+    provider_error(format!("Witness RPC {operation} failed: {category}"))
+}
+
+fn provider_error(message: impl Into<String>) -> CommittedDataError {
     CommittedDataError::Provider(message.into())
 }
 fn invalid_config(error: impl std::fmt::Display) -> PieGenerationError {
@@ -192,13 +217,94 @@ mod tests {
         let provider = ReplayWitnesses::new(vec![tree.witness(0).unwrap()], None).unwrap();
         assert_eq!(provider.value(tree.root(), 0).unwrap(), Some(Felt::MAX));
         assert_eq!(provider.value(tree.root(), 1).unwrap(), None);
-        assert_eq!(provider.all().unwrap().len(), 1);
+        assert_eq!(provider.take_all().unwrap().len(), 1);
     }
     #[test]
     fn duplicate_root_index_input_is_rejected() {
         let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
         let witness = tree.witness(0).unwrap();
         assert!(ReplayWitnesses::new(vec![witness.clone(), witness], None).is_err());
+    }
+
+    #[test]
+    fn invalid_and_oversized_inline_witnesses_are_rejected() {
+        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+        let witness = tree.witness(0).unwrap();
+        let oversized = vec![witness.clone(); MAX_COMMITTED_DATA_WITNESSES + 1];
+        let error = ReplayWitnesses::new(oversized, None).unwrap_err();
+        assert!(error.to_string().contains("At most"));
+        let mut invalid = witness;
+        invalid.value = Felt::ZERO;
+        let error = ReplayWitnesses::new(vec![invalid], None).unwrap_err();
+        assert!(error.to_string().contains("does not match its root"));
+    }
+
+    #[test]
+    fn taking_witnesses_empties_the_cache() {
+        let tree = CommittedDataSet::new(vec![Felt::MAX, Felt::ONE]).unwrap();
+        let witnesses = vec![tree.witness(0).unwrap(), tree.witness(1).unwrap()];
+        let provider = ReplayWitnesses::new(witnesses.clone(), None).unwrap();
+        assert_eq!(provider.take_all().unwrap(), witnesses);
+        assert!(provider.take_all().unwrap().is_empty());
+        assert_eq!(provider.value(tree.root(), 0).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn transport_errors_preserve_categories_without_endpoint_secrets() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://user:password@{}/private?token=secret", listener.local_addr().unwrap());
+        let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_millis(100)).build().unwrap();
+        // Keep the listener open without responding, so the request must time out.
+        let error = client.get(&endpoint).send().await.unwrap_err();
+        assert_eq!(
+            transport_error("request", error).to_string(),
+            "Committed-data provider failed: Witness RPC request failed: timeout"
+        );
+        drop(listener);
+        let error = client.get(&endpoint).send().await.unwrap_err();
+        assert_eq!(
+            transport_error("request", error).to_string(),
+            "Committed-data provider failed: Witness RPC request failed: connection failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_failure_preserves_status_without_endpoint_or_response_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://user:password@{}/private?token=secret", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buffer = [0_u8; 1024];
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                assert!(request.len() <= 4096);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..end]).unwrap().to_ascii_lowercase();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecret")
+                .await
+                .unwrap();
+        });
+        let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
+        let error = provider.fetch_witness((Felt::ONE, 0)).await.unwrap_err();
+        assert_eq!(error.to_string(), "Committed-data provider failed: Witness RPC returned HTTP 503");
+        assert!(provider.take_all().unwrap().is_empty());
+        server.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -258,6 +364,6 @@ mod tests {
         .await
         .unwrap();
         server.join().unwrap();
-        assert_eq!(provider.all().unwrap(), vec![witness]);
+        assert_eq!(provider.take_all().unwrap(), vec![witness]);
     }
 }
