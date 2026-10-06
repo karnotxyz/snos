@@ -20,11 +20,12 @@ use starknet_types_core::felt::Felt;
 /// // Create custom configuration
 /// let custom_config = ChainConfig {
 ///     chain_id: ChainId::Mainnet,
-///     strk_fee_token_address: ContractAddress::try_from(Felt::from_hex_unchecked("0x123...")).unwrap(),
 ///     is_l3: true,
+///     ..ChainConfig::default()
 /// };
 /// ```
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChainConfig {
     /// The chain ID for the target Starknet network.
     pub chain_id: ChainId,
