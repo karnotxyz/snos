@@ -78,15 +78,24 @@ impl ReplayWitnesses {
         let Some((client, url)) = &self.remote else {
             return Ok(None);
         };
-        let mut response = client
-            .post(url.clone())
-            .json(&serde_json::json!({
+        // A feeder base URL selects the read-only GET transport. Retain the legacy JSON-RPC
+        // transport for existing operators; there is no automatic fallback after an error.
+        let feeder = url.path().trim_end_matches('/').ends_with("/feeder_gateway");
+        let request = if feeder {
+            let mut endpoint = url.clone();
+            endpoint.set_path(&format!("{}/get_committed_data_witness", url.path().trim_end_matches('/')));
+            endpoint
+                .query_pairs_mut()
+                .append_pair("root", &format!("{:#x}", key.0))
+                .append_pair("index", &key.1.to_string());
+            client.get(endpoint)
+        } else {
+            client.post(url.clone()).json(&serde_json::json!({
                 "jsonrpc": "2.0", "id": 1, "method": "madara_getCommittedDataWitness",
                 "params": [key.0, key.1]
             }))
-            .send()
-            .await
-            .map_err(|error| transport_error("request", error))?;
+        };
+        let mut response = request.send().await.map_err(|error| transport_error("request", error))?;
         if !response.status().is_success() {
             return Err(provider_error(format!("Witness RPC returned HTTP {}", response.status().as_u16())));
         }
@@ -100,7 +109,13 @@ impl ReplayWitnesses {
             }
             bytes.extend_from_slice(&chunk);
         }
-        parse_response(&bytes, key)
+        if feeder {
+            let witness =
+                serde_json::from_slice(&bytes).map_err(|_| provider_error("Invalid feeder witness response"))?;
+            validate_witness(witness, key)
+        } else {
+            parse_response(&bytes, key)
+        }
     }
 }
 
@@ -160,12 +175,20 @@ fn parse_response(bytes: &[u8], key: Key) -> Result<Option<CommittedDataWitness>
     if response.jsonrpc != "2.0" || response.id != 1 {
         return Err(provider_error("Witness RPC response mismatch"));
     }
-    if let Some(witness) = &response.result {
+    validate_witness(response.result, key)
+}
+
+/// Both transports must authenticate identity and Merkle membership before caching any value.
+fn validate_witness(
+    witness: Option<CommittedDataWitness>,
+    key: Key,
+) -> Result<Option<CommittedDataWitness>, CommittedDataError> {
+    if let Some(witness) = &witness {
         if (witness.root, witness.index) != key || !witness.verify() {
             return Err(CommittedDataError::InvalidWitness);
         }
     }
-    Ok(response.result)
+    Ok(witness)
 }
 
 // Keep only safe categories: reqwest's Display/Debug/source chain can contain access-bearing URLs.
@@ -305,6 +328,39 @@ mod tests {
         assert_eq!(error.to_string(), "Committed-data provider failed: Witness RPC returned HTTP 503");
         assert!(provider.take_all().unwrap().is_empty());
         server.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn feeder_get_witness_is_authenticated_cached_and_collected() {
+        use std::io::{Read, Write};
+        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+        let witness = tree.witness(0).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/feeder_gateway/", listener.local_addr().unwrap());
+        let root = tree.root();
+        let body = serde_json::to_string(&Some(witness.clone())).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let mut buffer = [0_u8; 1024];
+                let count = stream.read(&mut buffer).unwrap();
+                assert!(count > 0 && request.len() + count <= 4096);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = std::str::from_utf8(&request).unwrap();
+            assert!(request.starts_with(&format!(
+                "GET /feeder_gateway/get_committed_data_witness?root={root:#x}&index=0 HTTP/1.1"
+            )));
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
+                .unwrap();
+        });
+        let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
+        assert_eq!(provider.value(root, 0).unwrap(), Some(Felt::MAX));
+        server.join().unwrap();
+        assert_eq!(provider.value(root, 0).unwrap(), Some(Felt::MAX));
+        assert_eq!(provider.take_all().unwrap(), vec![witness]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
