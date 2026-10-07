@@ -25,7 +25,7 @@ struct Cli {
     #[arg(long, env = "SNOS_USE_COMMITTED_DATA")]
     use_committed_data: bool,
 
-    /// Operator-configured Madara admin RPC for authenticated witnesses.
+    /// Operator-configured Madara feeder gateway for authenticated witnesses.
     #[arg(long, env = "SNOS_COMMITTED_DATA_RPC_URL")]
     committed_data_rpc_url: Option<String>,
 

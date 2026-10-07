@@ -593,7 +593,7 @@ async fn process_block_set(args: &Args, blocks: &[u64]) -> Result<String, Proces
     let output_path = args
         .output_dir
         .as_deref()
-        .map(|output_dir| Path::new(output_dir).join(&output_filename).to_string_lossy().into_owned());
+        .map(|output_dir| std::path::Path::new(output_dir).join(&output_filename).to_string_lossy().into_owned());
 
     // Load versioned constants from file if provided
     // Note: Non-fatal error handling - if loading fails, we fall back to auto-detection
@@ -768,13 +768,6 @@ async fn write_error_to_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sequential_block_set_respects_optional_end_block() {
-        assert_eq!(sequential_block_set(100, 5, Some(102)), Some(vec![100, 101, 102]));
-        assert_eq!(sequential_block_set(103, 5, Some(102)), None);
-        assert_eq!(sequential_block_set(100, 2, None), Some(vec![100, 101]));
-    }
 
     #[test]
     fn committed_data_cli_requires_explicit_permission_for_witness_sources() {

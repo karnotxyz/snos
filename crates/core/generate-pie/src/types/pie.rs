@@ -33,7 +33,7 @@ use crate::types::{ChainConfig, OsHintsConfiguration};
 pub struct PieGenerationInput {
     /// The RPC URL of the Starknet node to connect to.
     pub rpc_url: String,
-    /// Optional operator-configured Madara admin RPC; fetches authenticated witnesses on demand.
+    /// Optional operator-configured Madara feeder gateway; fetches authenticated witnesses on demand.
     /// Inline witnesses remain supported for air-gapped proving and reproducible inputs.
     pub committed_data_rpc_url: Option<String>,
     /// The list of block numbers to process for PIE generation.

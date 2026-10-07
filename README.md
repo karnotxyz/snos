@@ -253,7 +253,7 @@ and reader-list inputs have been removed and are rejected in structured input.
 Each calling contract must still validate the root's authorization and freshness.
 The aggregator needs no committed-data flag.
 
-SNOS pins sequencer `0149bf12a9184edd07241c0d3465a85a1a036446`, which supplies the
+SNOS pins sequencer `7d387c5552972a26efcaf8f8ef2d74fd4de923cb`, which supplies the
 regenerated OS, virtual-OS and aggregator programs and hashes. The same binary can
 process ordinary blocks with reads disabled and committed-data blocks with reads
 enabled, subject to the protocol versions supported by that dependency. This does
@@ -268,16 +268,19 @@ historical replay; retain the matching older proving stack for those blocks.
 `os_hints_config.committed_data_witnesses`. The binary accepts the complete typed
 request as JSON with `generate-pie --input-stdin`; it rejects competing CLI options.
 Alternatively, set `committed_data_rpc_url` in the generation input (or
-`--committed-data-rpc-url` on the CLI) to an operator-controlled Madara admin RPC.
-Replay fetches only the witnesses actually read and passes the collected witnesses
-to the OS in memory. Set `os_hints_config.use_committed_data` to `true`
+`--committed-data-rpc-url` on the CLI) to an operator-controlled Madara feeder
+gateway URL ending in `/feeder_gateway`. Replay fetches only the witnesses actually
+read with `GET /get_committed_data_witness?root=<root>&index=<index>` and passes the
+collected witnesses to the OS in memory. Set `os_hints_config.use_committed_data` to `true`
 (or `--use-committed-data` / `SNOS_USE_COMMITTED_DATA=true`). A path-based witness
-file remains a standalone CLI convenience, not a requirement for orchestration. Both `generate-pie`
-and `rpc-replay` accept `--use-committed-data`, `--committed-data-rpc-url` and
-`--committed-data-witnesses-path`. Witness objects contain only `root`, `index`,
-`value` and the 19-element `siblings` array. RPC requests use
-`madara_getCommittedDataWitness(root, index)`. Repeated reads share one cached
-witness per `(root, index)`; duplicate tuples in supplied witness arrays are rejected.
+file remains a standalone CLI convenience, not a requirement for orchestration. Both
+`generate-pie` and `rpc-replay` accept `--use-committed-data`,
+`--committed-data-rpc-url` and `--committed-data-witnesses-path`. Witness objects
+contain only `root`, `index`, `value` and the 19-element `siblings` array. Repeated
+reads share one cached witness per `(root, index)`; duplicate tuples in supplied
+witness arrays are rejected. The legacy JSON-RPC witness transport is retained only
+for compatibility and is selected when the URL does not end in `/feeder_gateway`;
+current Madara deployments should use the feeder URL.
 
 Version one supports up to 524,288 indexed values per root and 65,536 distinct
 witnesses per generation request. Structured JSON is limited to 128 MiB; each
@@ -288,9 +291,13 @@ Configure batch sizes and retention accordingly. Every proving node must retain 
 be able to retrieve historical datasets for the roots it replays. Committing a root
 does not make the dataset available or its underlying real-world values truthful.
 
-The current version conservatively charges 1,000,000 additional Sierra gas per
-successful read and accounts for OS work in Blockifier. Recalibrating these protocol
-constants requires coordinated execution/prover changes and new validation.
+The current version charges 33,141 additional Sierra gas per successful read after
+the normal `CallContract` charge. The measured additive OS resource delta is 194
+steps, zero memory holes, 49 range checks and 21 Poseidon instances, producing a
+complete special-call price of 124,701 gas. The Starknet OS flow test profiles the
+nested committed-data call and asserts that it still matches this charged resource
+model. Recalibrating these protocol constants requires coordinated execution/prover
+changes and regenerated program hashes.
 
 Adapters must validate both authorized/fresh roots and valid indices before
 calling this primitive. They must not expose arbitrary root/index forwarding. Publish
