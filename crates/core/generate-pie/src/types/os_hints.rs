@@ -16,9 +16,11 @@
 ///     debug_mode: true,
 ///     full_output: true,
 ///     use_kzg_da: false,
+///     use_committed_data: false, committed_data_witnesses: Vec::new(),
 /// };
 /// ```
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct OsHintsConfiguration {
     /// Whether to enable debug mode for detailed logging and output.
     pub debug_mode: bool,
@@ -26,6 +28,12 @@ pub struct OsHintsConfiguration {
     pub full_output: bool,
     /// Whether to use KZG (Kate-Zaverucha-Goldberg) data availability mode.
     pub use_kzg_da: bool,
+    /// Permit committed-data reads during replay and proving. Defaults to false.
+    /// This input is not included in the OS config hash or public output.
+    pub use_committed_data: bool,
+    /// Private committed_data witnesses keyed by root and index. Never included in tx calldata.
+    #[serde(deserialize_with = "blockifier::execution::syscalls::committed_data::deserialize_witnesses")]
+    pub committed_data_witnesses: Vec<blockifier::execution::syscalls::committed_data::CommittedDataWitness>,
 }
 
 impl Default for OsHintsConfiguration {
@@ -35,19 +43,37 @@ impl Default for OsHintsConfiguration {
     ///
     /// A `OsHintsConfiguration` instance with:
     /// - Debug mode: enabled (for better error reporting)
-    /// - Full output: disabled (for performance)
-    /// - KZG DA: enabled (modern data availability)
+    /// - Full output: enabled (for local aggregation)
+    /// - KZG DA: disabled (selected later by the aggregator)
     fn default() -> Self {
-        Self { debug_mode: true, full_output: true, use_kzg_da: false }
+        Self {
+            debug_mode: true,
+            full_output: true,
+            use_kzg_da: false,
+            use_committed_data: false,
+            committed_data_witnesses: Vec::new(),
+        }
     }
 }
 
 impl OsHintsConfiguration {
     pub fn default_with_is_l3(is_l3: bool) -> OsHintsConfiguration {
         if is_l3 {
-            Self { debug_mode: true, full_output: false, use_kzg_da: false }
+            Self {
+                debug_mode: true,
+                full_output: false,
+                use_kzg_da: false,
+                use_committed_data: false,
+                committed_data_witnesses: Vec::new(),
+            }
         } else {
-            Self { debug_mode: true, full_output: true, use_kzg_da: false }
+            Self {
+                debug_mode: true,
+                full_output: true,
+                use_kzg_da: false,
+                use_committed_data: false,
+                committed_data_witnesses: Vec::new(),
+            }
         }
     }
 }
