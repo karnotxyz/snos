@@ -61,7 +61,8 @@ struct RpcClientInner {
     /// Starknet-rs client for accessing standard Starknet RPC endpoints.
     starknet_client: JsonRpcClient<HttpTransport>,
     /// Timing state scoped to this SNOS run and shared by cloned clients.
-    timing: RpcTimingRecorder,
+    timing: Arc<RpcTimingRecorder>,
+    base_url: String,
 }
 
 impl RpcClientInner {
@@ -91,7 +92,7 @@ impl RpcClientInner {
     ///
     /// let inner = RpcClientInner::new("https://your-starknet-node.com");
     /// ```
-    fn try_new(base_url: &str) -> anyhow::Result<Self> {
+    fn try_new(base_url: &str, timing: Arc<RpcTimingRecorder>) -> anyhow::Result<Self> {
         let starknet_rpc_url = format!("{}/rpc/{}", base_url, STARKNET_RPC_VERSION);
         info!("Initializing Starknet RPC client with URL: {}", starknet_rpc_url);
 
@@ -115,7 +116,7 @@ impl RpcClientInner {
 
         let provider = JsonRpcClient::new(HttpTransport::new_with_client(starknet_rpc_url, http_client));
 
-        Ok(Self { starknet_client: provider, timing: RpcTimingRecorder::default() })
+        Ok(Self { starknet_client: provider, timing, base_url: base_url.to_owned() })
     }
 }
 
@@ -173,7 +174,17 @@ impl RpcClient {
     /// let client = RpcClient::new("https://your-starknet-node.com");
     /// ```
     pub fn try_new(base_url: &str) -> anyhow::Result<Self> {
-        Ok(Self { inner: Arc::new(RpcClientInner::try_new(base_url)?) })
+        let timing = Arc::new(RpcTimingRecorder::default());
+        Ok(Self { inner: Arc::new(RpcClientInner::try_new(base_url, timing)?) })
+    }
+
+    /// Creates a client with an independent HTTP connection pool.
+    ///
+    /// SNOS uses this for synchronous Blockifier state reads so that connections
+    /// driven by the dedicated sync runtime are never reused by async preparation.
+    pub fn try_clone_isolated(&self) -> anyhow::Result<Self> {
+        let inner = RpcClientInner::try_new(&self.inner.base_url, Arc::clone(&self.inner.timing))?;
+        Ok(Self { inner: Arc::new(inner) })
     }
 
     /// Returns a reference to the underlying Starknet RPC client.
@@ -208,7 +219,7 @@ impl RpcClient {
     }
 
     pub fn timing(&self) -> &RpcTimingRecorder {
-        &self.inner.timing
+        self.inner.timing.as_ref()
     }
 
     pub fn timing_snapshot(&self) -> RpcTimingSnapshot {
@@ -482,6 +493,16 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn isolated_clone_has_its_own_connection_pool() {
+        let client = RpcClient::try_new("http://localhost:9545").unwrap();
+        let isolated = client.try_clone_isolated().unwrap();
+
+        assert!(!Arc::ptr_eq(&client.inner, &isolated.inner));
+        assert_eq!(client.inner.base_url, isolated.inner.base_url);
+        assert!(Arc::ptr_eq(&client.inner.timing, &isolated.inner.timing));
+    }
 
     fn dummy_contract_proof(chunk_index: usize) -> ContractProof {
         ContractProof {
