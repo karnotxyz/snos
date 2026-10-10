@@ -47,7 +47,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/cargo-target \
     . sequencer_venv/bin/activate \
-    && CARGO_TARGET_DIR=/cargo-target cargo build --locked --profile production --bin generate-pie -j 1 \
+    && CARGO_TARGET_DIR=/cargo-target cargo build --locked --profile production --bin generate-pie -j 4 \
     && cp /cargo-target/production/generate-pie /app/generate-pie \
     && cp -R /cargo-target/release/shared_executables /app/shared_executables
 
