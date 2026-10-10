@@ -6,6 +6,7 @@ ENV LLVM_SYS_191_PREFIX=/usr/lib/llvm-19
 ENV MLIR_SYS_190_PREFIX=/usr/lib/llvm-19
 ENV TABLEGEN_190_PREFIX=/usr/lib/llvm-19
 ENV PATH=/usr/lib/llvm-19/bin:/usr/local/cargo/bin:$PATH
+ENV RUSTFLAGS="-C target-cpu=x86-64-v3"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates clang-19 git libgmp-dev libmlir-19-dev libpolly-19-dev \
@@ -46,8 +47,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/cargo-target \
     . sequencer_venv/bin/activate \
-    && CARGO_TARGET_DIR=/cargo-target cargo build --locked --release --bin generate-pie -j 1 \
-    && cp /cargo-target/release/generate-pie /app/generate-pie \
+    && CARGO_TARGET_DIR=/cargo-target cargo build --locked --profile production --bin generate-pie -j 1 \
+    && cp /cargo-target/production/generate-pie /app/generate-pie \
     && cp -R /cargo-target/release/shared_executables /app/shared_executables
 
 FROM debian:trixie-slim

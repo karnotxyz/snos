@@ -21,9 +21,7 @@ license-file = "LICENSE"
 starknet_api = { git = "https://github.com/karnotxyz/sequencer", rev = "6524aca471e9133b85c6e30f8ace44033e1a92b4", features = [
   "testing",
 ] }
-starknet_os = { git = "https://github.com/karnotxyz/sequencer", rev = "6524aca471e9133b85c6e30f8ace44033e1a92b4", features = [
-  "testing",
-] }
+starknet_os = { git = "https://github.com/karnotxyz/sequencer", rev = "6524aca471e9133b85c6e30f8ace44033e1a92b4" }
 blockifier = { git = "https://github.com/karnotxyz/sequencer", rev = "6524aca471e9133b85c6e30f8ace44033e1a92b4", features = [
   "testing",
   "reexecution",
@@ -74,3 +72,8 @@ aws-config = "1.1"
 aws-sdk-s3 = "1.15"
 
 starknet-os-types = { path = "crates/starknet-os-types" }
+
+[profile.production]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
