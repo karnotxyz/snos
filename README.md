@@ -193,13 +193,14 @@ This project is licensed under the MIT License. See the [LICENSE](./LICENSE) fil
 
 ## Committed Data Reads (appchain extension)
 
-This fork supports `get_value(root, index)` at
+This fork supports `get_value(root, key)` at
 `starknet_keccak("committed_data_v1")`. A value is a full felt, not an Oracle-specific
 price. The application must obtain the root from its authenticated storage and
-control publication and freshness. The leaf binds `COMMITTED_DATA_V1`, the index
-and the value. Dataset roots and witnesses are shared across contracts; they are
-not bound to a publisher address. The Cairo OS independently verifies the ordered,
-19-level Poseidon path and the returned value.
+control publication and freshness. A leaf binds `CD_MPT_LEAF_V1`, the complete felt key and value. A compressed
+binary Patricia branch binds `CD_MPT_BRANCH_V1 + bit` and both child hashes using
+Poseidon hash-many. Branch bits increase bottom-up and are below 252. The Cairo OS
+independently checks this path and the returned value. No symbol, price or caller
+semantics are embedded in the commitment. Zero values are distinct from missing keys.
 
 Supported transaction scope: committed-data reads may only execute within account
 transactions. L1-handler transactions must never reach this primitive, either
@@ -224,7 +225,7 @@ Failure and recovery behavior:
   original block. This can stall proving. L1-handler use remains unsupported even
   when data is available.
 - If the original execution was valid and only the proving node lacks data, restore
-  the historical witnesses for the exact root and index,
+  the historical witnesses for the exact root and key,
   or restore access to a witness RPC that serves them, then retry the same input.
   Enable `use_committed_data` for replay and proving. Valid witnesses
   resolve the availability failure; all remaining replay and proof checks must
@@ -253,16 +254,12 @@ and reader-list inputs have been removed and are rejected in structured input.
 Each calling contract must still validate the root's authorization and freshness.
 The aggregator needs no committed-data flag.
 
-SNOS pins sequencer `7d387c5552972a26efcaf8f8ef2d74fd4de923cb`, which supplies the
-regenerated OS, virtual-OS and aggregator programs and hashes. The same binary can
-process ordinary blocks with reads disabled and committed-data blocks with reads
-enabled, subject to the protocol versions supported by that dependency. This does
-not make it interchangeable with historical OS program hashes. Settlement/prover
-configuration must accept the pinned programs; clients using virtual-OS proof facts
-must separately update their allowed program hashes. Existing publisher-bound
-snapshots require regenerated roots and witnesses, and the new roots must be
-published in authenticated contract state. They cannot replace old roots during
-historical replay; retain the matching older proving stack for those blocks.
+The sequencer revision in Cargo.toml supplies the matching Blockifier and compiled OS.
+The OS and virtual-OS program hashes change with this verifier; the aggregator output
+format is unchanged. Prover/settlement configuration must accept the new programs.
+This replaces an unreleased indexed format: regenerate roots, datasets and witnesses
+and update callers to pass keys. Existing historical blocks require their matching
+execution/proving stack; roots cannot be retroactively replaced during replay.
 
 `generate_pie(PieGenerationInput)` accepts witnesses directly in
 `os_hints_config.committed_data_witnesses`. The binary accepts the complete typed
@@ -270,37 +267,38 @@ request as JSON with `generate-pie --input-stdin`; it rejects competing CLI opti
 Alternatively, set `committed_data_rpc_url` in the generation input (or
 `--committed-data-rpc-url` on the CLI) to an operator-controlled Madara feeder
 gateway URL ending in `/feeder_gateway`. Replay fetches only the witnesses actually
-read with `GET /get_committed_data_witness?root=<root>&index=<index>` and passes the
+read with `GET /get_committed_data_witness?root=<root>&key=<felt-key>` and passes the
 collected witnesses to the OS in memory. Set `os_hints_config.use_committed_data` to `true`
 (or `--use-committed-data` / `SNOS_USE_COMMITTED_DATA=true`). A path-based witness
 file remains a standalone CLI convenience, not a requirement for orchestration. Both
 `generate-pie` and `rpc-replay` accept `--use-committed-data`,
 `--committed-data-rpc-url` and `--committed-data-witnesses-path`. Witness objects
-contain only `root`, `index`, `value` and the 19-element `siblings` array. Repeated
-reads share one cached witness per `(root, index)`; duplicate tuples in supplied
+contain only `root`, `key`, `value` and a bottom-up `siblings: [{bit, hash}, ...]` array. Repeated
+reads share one cached witness per `(root, key)`; duplicate tuples in supplied
 witness arrays are rejected. The legacy JSON-RPC witness transport is retained only
 for compatibility and is selected when the URL does not end in `/feeder_gateway`;
 current Madara deployments should use the feeder URL.
 
-Version one supports up to 524,288 indexed values per root and 65,536 distinct
+Version one supports up to 524,288 key/value entries per root and 65,536 distinct
 witnesses per generation request. Structured JSON is limited to 128 MiB; each
-witness response is limited to 8 KiB and a 30-second request timeout. Oversized,
+witness response is limited to 32 KiB and a 30-second request timeout. Oversized,
 malformed, duplicate or mismatching witnesses fail. Missing data also fails replay;
 it is never replaced with zero or converted into a provable arbitrary revert.
 Configure batch sizes and retention accordingly. Every proving node must retain or
 be able to retrieve historical datasets for the roots it replays. Committing a root
 does not make the dataset available or its underlying real-world values truthful.
 
-The current version charges 33,141 additional Sierra gas per successful read after
-the normal `CallContract` charge. The measured additive OS resource delta is 194
-steps, zero memory holes, 49 range checks and 21 Poseidon instances, producing a
-complete special-call price of 124,701 gas. The Starknet OS flow test profiles the
-nested committed-data call and asserts that it still matches this charged resource
-model. Recalibrating these protocol constants requires coordinated execution/prover
-changes and regenerated program hashes.
+The extra read charge depends on the actual number of Patricia branches `h`, not the
+number of dataset entries. Bounds reserve `600 + 400h` steps, `40 + 30h` range checks
+and `2h + 2` Poseidon permutations. The ordinary CallContract resource allowance is
+already counted and is subtracted from the extra charge. Blockifier and Cairo use
+the same formula; the OS flow test profiles paths including high-bit keys and 252
+branches against the bouncer allowance. Proving gas uses the configured proving
+builtin weights, which differ from Sierra weights. Changing these constants requires
+coordinated execution/prover changes and regenerated program hashes.
 
-Adapters must validate both authorized/fresh roots and valid indices before
-calling this primitive. They must not expose arbitrary root/index forwarding. Publish
+Adapters must validate both authorized/fresh roots and valid keys before
+calling this primitive. They must not expose arbitrary root/key forwarding. Publish
 roots only after their complete datasets are durably imported and replicated. Otherwise
 an attacker can deliberately trigger an availability failure after expensive execution,
 causing an uncharged transaction rejection. Adapter code and upgrade/publication authority

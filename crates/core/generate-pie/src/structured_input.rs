@@ -95,11 +95,11 @@ mod tests {
     fn shared_root_witness_input_requires_permission_and_rejects_publisher_field() {
         use blockifier::execution::syscalls::committed_data::CommittedDataSet;
         use starknet_types_core::felt::Felt;
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
         let mut input = serde_json::json!({
             "rpc_url": "http://127.0.0.1:1234", "blocks": [1], "layout": "all_cairo",
             "chain_config": crate::types::ChainConfig::default(),
-            "os_hints_config": {"committed_data_witnesses": [tree.witness(0).unwrap()]}
+            "os_hints_config": {"committed_data_witnesses": [tree.witness(Felt::ZERO).unwrap()]}
         });
         let parse = |value: &serde_json::Value| read_pie_input(serde_json::to_vec(value).unwrap().as_slice());
         assert!(parse(&input).is_err());

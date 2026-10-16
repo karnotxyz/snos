@@ -11,8 +11,8 @@ use starknet_types_core::felt::Felt;
 
 use crate::error::PieGenerationError;
 
-type Key = (Felt, u32);
-const MAX_RESPONSE_BYTES: usize = 8192;
+type Key = (Felt, Felt);
+const MAX_RESPONSE_BYTES: usize = 32 * 1024;
 
 /// One request at a time on cache misses; hot reads never wait on network I/O.
 /// URLs are deliberately excluded from Debug and transport errors.
@@ -38,7 +38,7 @@ impl ReplayWitnesses {
             if !witness.verify() {
                 return Err(invalid_config(CommittedDataError::InvalidWitness));
             }
-            if validated.insert((witness.root, witness.index), witness).is_some() {
+            if validated.insert((witness.root, witness.key), witness).is_some() {
                 return Err(invalid_config(CommittedDataError::DuplicateWitness));
             }
         }
@@ -92,7 +92,7 @@ impl ReplayWitnesses {
             endpoint
                 .query_pairs_mut()
                 .append_pair("root", &format!("{:#x}", key.0))
-                .append_pair("index", &key.1.to_string());
+                .append_pair("key", &format!("{:#x}", key.1));
             client.get(endpoint)
         } else {
             client.post(url.clone()).json(&serde_json::json!({
@@ -125,7 +125,7 @@ impl ReplayWitnesses {
 }
 
 impl CommittedDataProvider for ReplayWitnesses {
-    fn value(&self, root: Felt, index: u32) -> Result<Option<(Felt, usize)>, CommittedDataError> {
+    fn value(&self, root: Felt, index: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError> {
         let key = (root, index);
         if let Some(value) = self.cached(key)? {
             return Ok(Some(value));
@@ -189,7 +189,7 @@ fn validate_witness(
     key: Key,
 ) -> Result<Option<CommittedDataWitness>, CommittedDataError> {
     if let Some(witness) = &witness {
-        if (witness.root, witness.index) != key || !witness.verify() {
+        if (witness.root, witness.key) != key || !witness.verify() {
             return Err(CommittedDataError::InvalidWitness);
         }
     }
@@ -226,12 +226,12 @@ mod tests {
 
     #[test]
     fn rpc_cannot_substitute_a_different_tuple_or_value() {
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
-        let witness = tree.witness(0).unwrap();
-        let key = (witness.root, witness.index);
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
+        let witness = tree.witness(Felt::ZERO).unwrap();
+        let key = (witness.root, witness.key);
         let envelope = |w| serde_json::to_vec(&serde_json::json!({"jsonrpc":"2.0", "id":1, "result":w})).unwrap();
         assert_eq!(parse_response(&envelope(witness.clone()), key).unwrap(), Some(witness.clone()));
-        assert!(parse_response(&envelope(witness.clone()), (key.0, 1)).is_err());
+        assert!(parse_response(&envelope(witness.clone()), (key.0, Felt::ONE)).is_err());
         let mut bad = witness;
         bad.value = Felt::ZERO;
         assert!(parse_response(&envelope(bad), key).is_err());
@@ -241,23 +241,23 @@ mod tests {
 
     #[test]
     fn inline_witnesses_work_without_network() {
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
-        let provider = ReplayWitnesses::new(vec![tree.witness(0).unwrap()], None).unwrap();
-        assert_eq!(provider.value(tree.root(), 0).unwrap(), Some((Felt::MAX, tree.height())));
-        assert_eq!(provider.value(tree.root(), 1).unwrap(), None);
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
+        let provider = ReplayWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()], None).unwrap();
+        assert_eq!(provider.value(tree.root(), Felt::ZERO).unwrap(), Some((Felt::MAX, 0)));
+        assert_eq!(provider.value(tree.root(), Felt::ONE).unwrap(), None);
         assert_eq!(provider.take_all().unwrap().len(), 1);
     }
     #[test]
-    fn duplicate_root_index_input_is_rejected() {
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
-        let witness = tree.witness(0).unwrap();
+    fn duplicate_root_key_input_is_rejected() {
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
+        let witness = tree.witness(Felt::ZERO).unwrap();
         assert!(ReplayWitnesses::new(vec![witness.clone(), witness], None).is_err());
     }
 
     #[test]
     fn invalid_and_oversized_inline_witnesses_are_rejected() {
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
-        let witness = tree.witness(0).unwrap();
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
+        let witness = tree.witness(Felt::ZERO).unwrap();
         let oversized = vec![witness.clone(); MAX_COMMITTED_DATA_WITNESSES + 1];
         let error = ReplayWitnesses::new(oversized, None).unwrap_err();
         assert!(error.to_string().contains("At most"));
@@ -269,12 +269,12 @@ mod tests {
 
     #[test]
     fn taking_witnesses_empties_the_cache() {
-        let tree = CommittedDataSet::new(vec![Felt::MAX, Felt::ONE]).unwrap();
-        let witnesses = vec![tree.witness(0).unwrap(), tree.witness(1).unwrap()];
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX), (Felt::ONE, Felt::ONE)]).unwrap();
+        let witnesses = vec![tree.witness(Felt::ZERO).unwrap(), tree.witness(Felt::ONE).unwrap()];
         let provider = ReplayWitnesses::new(witnesses.clone(), None).unwrap();
         assert_eq!(provider.take_all().unwrap(), witnesses);
         assert!(provider.take_all().unwrap().is_empty());
-        assert_eq!(provider.value(tree.root(), 0).unwrap(), None);
+        assert_eq!(provider.value(tree.root(), Felt::ZERO).unwrap(), None);
     }
 
     #[tokio::test]
@@ -329,7 +329,7 @@ mod tests {
                 .unwrap();
         });
         let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
-        let error = provider.fetch_witness((Felt::ONE, 0)).await.unwrap_err();
+        let error = provider.fetch_witness((Felt::ONE, Felt::ZERO)).await.unwrap_err();
         assert_eq!(error.to_string(), "Committed-data provider failed: Witness RPC returned HTTP 503");
         assert!(provider.take_all().unwrap().is_empty());
         server.await.unwrap();
@@ -338,11 +338,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn feeder_get_witness_is_authenticated_cached_and_collected() {
         use std::io::{Read, Write};
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
-        let witness = tree.witness(0).unwrap();
+        let tree = CommittedDataSet::new(vec![(Felt::MAX, Felt::MAX)]).unwrap();
+        let witness = tree.witness(Felt::MAX).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/feeder_gateway/", listener.local_addr().unwrap());
         let root = tree.root();
+        let key = Felt::MAX;
         let body = serde_json::to_string(&Some(witness.clone())).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -356,26 +357,26 @@ mod tests {
             }
             let request = std::str::from_utf8(&request).unwrap();
             assert!(request.starts_with(&format!(
-                "GET /feeder_gateway/get_committed_data_witness?root={root:#x}&index=0 HTTP/1.1"
+                "GET /feeder_gateway/get_committed_data_witness?root={root:#x}&key={key:#x} HTTP/1.1"
             )));
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
                 .unwrap();
         });
         let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
-        assert_eq!(provider.value(root, 0).unwrap(), Some((Felt::MAX, tree.height())));
+        assert_eq!(provider.value(root, Felt::MAX).unwrap(), Some((Felt::MAX, 0)));
         server.join().unwrap();
-        assert_eq!(provider.value(root, 0).unwrap(), Some((Felt::MAX, tree.height())));
+        assert_eq!(provider.value(root, Felt::MAX).unwrap(), Some((Felt::MAX, 0)));
         assert_eq!(provider.take_all().unwrap(), vec![witness]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_rpc_response_is_cached_and_collected_for_os() {
         use std::io::{Read, Write};
-        let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
-        let witness = tree.witness(0).unwrap();
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
+        let witness = tree.witness(Felt::ZERO).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
-        let expected_params = serde_json::json!([tree.root(), 0]);
+        let expected_params = serde_json::json!([tree.root(), Felt::ZERO]);
         let body = serde_json::to_string(&serde_json::json!({"jsonrpc":"2.0","id":1,"result":witness})).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -409,12 +410,12 @@ mod tests {
         });
         let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
         let root = tree.root();
-        let height = tree.height();
+        let height = 0;
         let tasks: Vec<_> = (0..8)
             .map(|_| {
                 let cached = provider.clone();
                 tokio::spawn(async move {
-                    assert_eq!(cached.value(root, 0).unwrap(), Some((Felt::MAX, height)));
+                    assert_eq!(cached.value(root, Felt::ZERO).unwrap(), Some((Felt::MAX, height)));
                 })
             })
             .collect();

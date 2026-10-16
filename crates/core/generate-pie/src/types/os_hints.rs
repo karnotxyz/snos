@@ -31,7 +31,7 @@ pub struct OsHintsConfiguration {
     /// Permit committed-data reads during replay and proving. Defaults to false.
     /// This input is not included in the OS config hash or public output.
     pub use_committed_data: bool,
-    /// Private committed_data witnesses keyed by root and index. Never included in tx calldata.
+    /// Private committed_data witnesses keyed by root and felt key. Never included in tx calldata.
     #[serde(deserialize_with = "blockifier::execution::syscalls::committed_data::deserialize_witnesses")]
     pub committed_data_witnesses: Vec<blockifier::execution::syscalls::committed_data::CommittedDataWitness>,
 }
