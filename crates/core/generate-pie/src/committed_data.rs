@@ -70,8 +70,13 @@ impl ReplayWitnesses {
         Ok(witnesses.into_values().collect())
     }
 
-    fn cached(&self, key: Key) -> Result<Option<Felt>, CommittedDataError> {
-        Ok(self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.get(&key).map(|w| w.value))
+    fn cached(&self, key: Key) -> Result<Option<(Felt, usize)>, CommittedDataError> {
+        Ok(self
+            .witnesses
+            .lock()
+            .map_err(|_| provider_error("Witness cache poisoned"))?
+            .get(&key)
+            .map(|w| (w.value, w.siblings.len())))
     }
 
     async fn fetch_witness(&self, key: Key) -> Result<Option<CommittedDataWitness>, CommittedDataError> {
@@ -120,7 +125,7 @@ impl ReplayWitnesses {
 }
 
 impl CommittedDataProvider for ReplayWitnesses {
-    fn value(&self, root: Felt, index: u32) -> Result<Option<Felt>, CommittedDataError> {
+    fn value(&self, root: Felt, index: u32) -> Result<Option<(Felt, usize)>, CommittedDataError> {
         let key = (root, index);
         if let Some(value) = self.cached(key)? {
             return Ok(Some(value));
@@ -141,7 +146,7 @@ impl CommittedDataProvider for ReplayWitnesses {
 }
 
 impl ReplayWitnesses {
-    fn fetch_and_store(&self, key: Key) -> Result<Option<Felt>, CommittedDataError> {
+    fn fetch_and_store(&self, key: Key) -> Result<Option<(Felt, usize)>, CommittedDataError> {
         // Missing data is fatal to replay, never transformed into a provable contract revert.
         let _fetch = self.fetch.lock().map_err(|_| provider_error("Witness fetch gate poisoned"))?;
         if let Some(value) = self.cached(key)? {
@@ -155,7 +160,7 @@ impl ReplayWitnesses {
         let Some(witness) = rpc_client::utils::execute_coroutine(self.fetch_witness(key))? else {
             return Ok(None);
         };
-        let value = witness.value;
+        let value = (witness.value, witness.siblings.len());
         self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.insert(key, witness);
         Ok(Some(value))
     }
@@ -238,7 +243,7 @@ mod tests {
     fn inline_witnesses_work_without_network() {
         let tree = CommittedDataSet::new(vec![Felt::MAX]).unwrap();
         let provider = ReplayWitnesses::new(vec![tree.witness(0).unwrap()], None).unwrap();
-        assert_eq!(provider.value(tree.root(), 0).unwrap(), Some(Felt::MAX));
+        assert_eq!(provider.value(tree.root(), 0).unwrap(), Some((Felt::MAX, tree.height())));
         assert_eq!(provider.value(tree.root(), 1).unwrap(), None);
         assert_eq!(provider.take_all().unwrap().len(), 1);
     }
@@ -357,9 +362,9 @@ mod tests {
                 .unwrap();
         });
         let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
-        assert_eq!(provider.value(root, 0).unwrap(), Some(Felt::MAX));
+        assert_eq!(provider.value(root, 0).unwrap(), Some((Felt::MAX, tree.height())));
         server.join().unwrap();
-        assert_eq!(provider.value(root, 0).unwrap(), Some(Felt::MAX));
+        assert_eq!(provider.value(root, 0).unwrap(), Some((Felt::MAX, tree.height())));
         assert_eq!(provider.take_all().unwrap(), vec![witness]);
     }
 
@@ -404,11 +409,12 @@ mod tests {
         });
         let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
         let root = tree.root();
+        let height = tree.height();
         let tasks: Vec<_> = (0..8)
             .map(|_| {
                 let cached = provider.clone();
                 tokio::spawn(async move {
-                    assert_eq!(cached.value(root, 0).unwrap(), Some(Felt::MAX));
+                    assert_eq!(cached.value(root, 0).unwrap(), Some((Felt::MAX, height)));
                 })
             })
             .collect();
