@@ -51,6 +51,7 @@ async fn test_pie_generation(#[case] chain: &str, #[case] block_numbers: Vec<u64
     println!("🧪 Testing PIE generation for blocks on {}", chain);
 
     let input = PieGenerationInput {
+        committed_data_rpc_url: None,
         rpc_url: get_rpc_url(chain),
         blocks: block_numbers.clone(),
         chain_config: ChainConfig::default_with_chain(chain),
@@ -116,6 +117,7 @@ async fn test_pie_generation_with_custom_versioned_constants() {
     println!("🧪 Testing PIE generation with custom versioned constants for blocks on {}", chain);
 
     let input = PieGenerationInput {
+        committed_data_rpc_url: None,
         rpc_url: get_rpc_url(chain),
         blocks: block_numbers.clone(),
         chain_config: ChainConfig::default_with_chain(chain),
