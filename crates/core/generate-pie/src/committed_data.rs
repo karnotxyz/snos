@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use blockifier::execution::syscalls::committed_data::{
-    CommittedDataError, CommittedDataProvider, CommittedDataWitness, MAX_COMMITTED_DATA_WITNESSES,
+    CommittedDataBatchProof, CommittedDataError, CommittedDataProvider, CommittedDataWitness,
+    MAX_COMMITTED_DATA_WITNESSES,
 };
 use serde::Deserialize;
 use starknet_types_core::felt::Felt;
@@ -125,6 +126,13 @@ impl ReplayWitnesses {
 }
 
 impl CommittedDataProvider for ReplayWitnesses {
+    fn batch(&self, root: Felt, keys: &[Felt]) -> Result<CommittedDataBatchProof, CommittedDataError> {
+        CommittedDataBatchProof::new(root, keys, |key| {
+            // Populate through the same authenticated, bounded fetch path used by single reads.
+            self.value(root, key)?;
+            Ok(self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.get(&(root, key)).cloned())
+        })
+    }
     fn value(&self, root: Felt, index: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError> {
         let key = (root, index);
         if let Some(value) = self.cached(key)? {
@@ -245,6 +253,11 @@ mod tests {
         let provider = ReplayWitnesses::new(vec![tree.witness(Felt::ZERO).unwrap()], None).unwrap();
         assert_eq!(provider.value(tree.root(), Felt::ZERO).unwrap(), Some((Felt::MAX, 0)));
         assert_eq!(provider.value(tree.root(), Felt::ONE).unwrap(), None);
+        assert_eq!(
+            provider.batch(tree.root(), &[Felt::ZERO, Felt::ZERO]).unwrap(),
+            CommittedDataBatchProof::from_dataset(&tree, &[Felt::ZERO, Felt::ZERO]).unwrap()
+        );
+        assert!(provider.batch(tree.root(), &[Felt::ONE]).is_err());
         assert_eq!(provider.take_all().unwrap().len(), 1);
     }
     #[test]
