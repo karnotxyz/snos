@@ -289,13 +289,22 @@ be able to retrieve historical datasets for the roots it replays. Committing a r
 does not make the dataset available or its underlying real-world values truthful.
 
 The extra read charge depends on the actual number of Patricia branches `h`, not the
-number of dataset entries. Bounds reserve `600 + 400h` steps, `40 + 30h` range checks
+number of dataset entries. Bounds reserve `600 + 300h` steps, `40 + 20h` range checks
 and `2h + 2` Poseidon permutations. The ordinary CallContract resource allowance is
 already counted and is subtracted from the extra charge. Blockifier and Cairo use
 the same formula; the OS flow test profiles paths including high-bit keys and 252
 branches against the bouncer allowance. Proving gas uses the configured proving
 builtin weights, which differ from Sierra weights. Changing these constants requires
 coordinated execution/prover changes and regenerated program hashes.
+
+The batch entrypoint is `get_values(root, count, key_0, ..., key_{count-1})`, with 1–1024
+keys, returning `[count, value_0, ..., value_{count-1}]` in request order, including duplicates.
+It authenticates the union of requested paths. For `c` requested keys (including
+duplicates), `u` unique leaves and `b` expanded branches, its resource bounds are
+`1000 + 60c + 160u + 160b` steps, `30 + 4c + 12u + 6b` range checks,
+`2(b + u)` Poseidon permutations and `2u` bitwise instances. The ordinary
+CallContract allowance is subtracted once. Failed Sierra-tracked calls reserve
+unpaid proof work for block admission separately, without changing receipt fees.
 
 Adapters must validate both authorized/fresh roots and valid keys before
 calling this primitive. They must not expose arbitrary root/key forwarding. Publish

@@ -26,6 +26,7 @@ const MAX_BACKOFF_MS: u64 = 5000;
 pub struct RpcTimingSnapshot {
     pub wait_elapsed: Duration,
     pub cumulative_call_elapsed: Duration,
+    /// Finished attempts, including errors and cancellation.
     pub calls: u64,
     pub calls_by_method: HashMap<String, u64>,
 }
@@ -47,6 +48,19 @@ struct RpcTimingState {
 #[derive(Debug, Default)]
 pub struct RpcTimingRecorder {
     state: Mutex<RpcTimingState>,
+}
+
+// Close the interval on cancellation as well as normal completion.
+struct RpcCallGuard<'a> {
+    timing: &'a RpcTimingRecorder,
+    started_at: Instant,
+    method_name: String,
+}
+
+impl Drop for RpcCallGuard<'_> {
+    fn drop(&mut self) {
+        self.timing.call_finished(self.started_at, &self.method_name);
+    }
 }
 
 /// Gets or creates the global Tokio runtime.
@@ -73,7 +87,7 @@ impl RpcTimingRecorder {
         }
     }
 
-    fn call_started(&self, operation_name: &str) -> (Instant, String) {
+    fn call_started(&self, operation_name: &str) -> RpcCallGuard<'_> {
         let now = Instant::now();
         let mut state = self.state.lock().expect("RPC timing mutex poisoned");
 
@@ -82,7 +96,7 @@ impl RpcTimingRecorder {
         }
         state.active_calls += 1;
 
-        (now, rpc_method_name(operation_name).to_string())
+        RpcCallGuard { timing: self, started_at: now, method_name: rpc_method_name(operation_name).to_string() }
     }
 
     fn call_finished(&self, call_started_at: Instant, method_name: &str) {
@@ -172,9 +186,10 @@ where
     loop {
         attempts += 1;
 
-        let (call_started_at, method_name) = timing.call_started(operation_name);
-        let result = f().await;
-        timing.call_finished(call_started_at, &method_name);
+        let result = {
+            let _call = timing.call_started(operation_name);
+            f().await
+        };
 
         match result {
             Ok(result) => {
@@ -293,6 +308,24 @@ mod tests {
         assert_eq!(second.calls, 1);
         assert_eq!(second.calls_by_method.get("second_method"), Some(&1));
         assert!(!second.calls_by_method.contains_key("first_method"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_rpc_closes_timing_interval() {
+        let timing = RpcTimingRecorder::default();
+        let mut request =
+            Box::pin(execute_with_retry(&timing, "cancelled", std::future::pending::<Result<(), ProviderError>>));
+        // Poll exactly once so the request starts, without relying on a timeout race.
+        assert!(futures::poll!(&mut request).is_pending());
+        drop(request);
+        let after_cancel = timing.snapshot();
+        assert_eq!(after_cancel.calls, 1);
+        assert_eq!(timing.state.lock().unwrap().active_calls, 0);
+        assert_eq!(timing.snapshot().wait_elapsed, after_cancel.wait_elapsed);
+
+        execute_with_retry(&timing, "next", || async { Ok::<_, ProviderError>(()) }).await.unwrap();
+        assert_eq!(timing.snapshot().calls, 2);
+        assert_eq!(timing.state.lock().unwrap().active_calls, 0);
     }
 
     #[test]

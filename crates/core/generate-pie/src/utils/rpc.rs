@@ -291,16 +291,8 @@ async fn fetch_storage_proof_for_contract(
         summarize_felts(keys, 8)
     );
 
-    let operation_name = format!(
-        "get_proof(block_number: {block_number}, contract_address: {contract_address:#x}, keys: {})",
-        keys.len()
-    );
-
-    execute_with_retry(rpc_client.timing(), &operation_name, || {
-        rpc_client.starknet_rpc().get_proof(rpc_client.timing(), block_number, contract_address, keys)
-    })
-    .await
-    .map_err(|e| {
+    // get_proof retries individual chunks; retrying here would refetch successful chunks.
+    rpc_client.starknet_rpc().get_proof(rpc_client.timing(), block_number, contract_address, keys).await.map_err(|e| {
         let message = format!(
             "storage proof request failed for block {} contract {:#x} keys={} [{}]: {}",
             block_number,
@@ -396,6 +388,64 @@ mod tests {
     use blockifier::transaction::objects::TransactionExecutionInfo;
     use starknet_api::block::BlockNumber;
     use starknet_api::state::StorageKey;
+
+    #[tokio::test]
+    async fn storage_proof_failure_has_one_retry_budget() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = RpcClient::try_new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let server_calls = calls.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 1024];
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert!(count > 0 && request.len() + count <= 8192);
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                server_calls.fetch_add(1, Ordering::SeqCst);
+                stream
+                    .write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+        // Exercise both the empty-key and chunked paths through the production wrapper.
+        for keys in [vec![], vec![Felt::ONE]] {
+            let result = tokio::time::timeout(
+                Duration::from_secs(15),
+                fetch_storage_proof_for_contract(&client, Felt::ONE, &keys, 1),
+            )
+            .await;
+            if result.is_err() {
+                server.abort();
+            }
+            assert!(result.unwrap().is_err());
+        }
+        server.abort();
+        let _ = server.await;
+        assert_eq!(calls.load(Ordering::SeqCst), 10);
+        assert_eq!(client.timing_snapshot().calls, 10);
+    }
 
     fn contract_address(value: u64) -> ContractAddress {
         ContractAddress::try_from(Felt::from(value)).unwrap()
