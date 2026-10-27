@@ -58,22 +58,6 @@ impl Default for OsHintsConfiguration {
 
 impl OsHintsConfiguration {
     pub fn default_with_is_l3(is_l3: bool) -> OsHintsConfiguration {
-        if is_l3 {
-            Self {
-                debug_mode: true,
-                full_output: false,
-                use_kzg_da: false,
-                use_committed_data: false,
-                committed_data_witnesses: Vec::new(),
-            }
-        } else {
-            Self {
-                debug_mode: true,
-                full_output: true,
-                use_kzg_da: false,
-                use_committed_data: false,
-                committed_data_witnesses: Vec::new(),
-            }
-        }
+        Self { full_output: !is_l3, ..Self::default() }
     }
 }

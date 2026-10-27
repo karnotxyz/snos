@@ -51,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn witness_transport_rejects_trailing_input_and_wrong_path_length() {
+    fn witness_transport_rejects_trailing_input_and_legacy_index_field() {
         assert!(read_committed_data_witnesses(&b"[] []"[..]).is_err());
         let bad = br#"[{"root":"0x1","index":0,"value":"0x3","siblings":[]}]"#;
         assert!(read_committed_data_witnesses(&bad[..]).is_err());
@@ -69,6 +69,20 @@ mod tests {
         assert!(parsed.os_hints_config.use_committed_data);
         assert!(parsed.versioned_constants.is_none());
         assert_eq!(parsed.blocks, vec![1, 2]);
+    }
+
+    #[test]
+    fn block_order_validation_preserves_equal_neighbors() {
+        for (blocks, accepted) in
+            [(vec![1, 2], true), (vec![1, 1, 2], true), (vec![2, 1], false), (vec![1, 3, 2], false), (vec![], false)]
+        {
+            let input = serde_json::json!({
+                "rpc_url": "http://127.0.0.1:1234", "blocks": blocks, "layout": "all_cairo",
+                "chain_config": crate::types::ChainConfig::default()
+            });
+            let result = read_pie_input(serde_json::to_vec(&input).unwrap().as_slice());
+            assert_eq!(result.is_ok(), accepted, "blocks={blocks:?}: {result:?}");
+        }
     }
 
     #[test]

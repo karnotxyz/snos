@@ -77,9 +77,7 @@ impl PieGenerationInput {
         }
 
         // Validate that blocks are in ascending order
-        let mut sorted_blocks = self.blocks.clone();
-        sorted_blocks.sort();
-        if sorted_blocks != self.blocks {
+        if !self.blocks.is_sorted() {
             return Err(PieGenerationError::InvalidConfig("Blocks must be specified in ascending order".to_string()));
         }
 
