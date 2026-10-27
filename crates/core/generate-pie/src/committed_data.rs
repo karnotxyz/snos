@@ -261,6 +261,27 @@ mod tests {
         assert_eq!(provider.take_all().unwrap().len(), 1);
     }
     #[test]
+    fn batch_replay_bounds_repeated_sibling_hashes() {
+        use blockifier::execution::syscalls::committed_data::{
+            branch, leaf, CommittedDataSibling, COMMITTED_DATA_TREE_HEIGHT,
+        };
+        let mut root = leaf(Felt::ZERO, Felt::ONE);
+        let mut siblings = Vec::new();
+        for bit in 0..COMMITTED_DATA_TREE_HEIGHT {
+            siblings.push(CommittedDataSibling { bit: bit as u8, hash: root });
+            root = branch(bit as u8, root, root);
+        }
+        let witness = CommittedDataWitness { root, key: Felt::ZERO, value: Felt::ONE, siblings };
+        let provider = ReplayWitnesses::new(vec![witness.clone()], None).unwrap();
+        let proof = provider.batch(root, &[Felt::ZERO, Felt::ZERO]).unwrap();
+        assert_eq!(proof.branches, COMMITTED_DATA_TREE_HEIGHT);
+        assert_eq!(proof.proof.len(), 4 * COMMITTED_DATA_TREE_HEIGHT + 2);
+        assert_eq!(proof.leaves, vec![Felt::ZERO, Felt::ONE]);
+        assert_eq!(proof.indices, vec![0, 0]);
+        assert_eq!(provider.take_all().unwrap(), vec![witness]);
+    }
+
+    #[test]
     fn duplicate_root_key_input_is_rejected() {
         let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::MAX)]).unwrap();
         let witness = tree.witness(Felt::ZERO).unwrap();
