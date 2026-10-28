@@ -93,13 +93,21 @@ impl RpcClientInner {
     /// let inner = RpcClientInner::new("https://your-starknet-node.com");
     /// ```
     fn try_new(base_url: &str, timing: Arc<RpcTimingRecorder>) -> anyhow::Result<Self> {
+        let rpc_pool_max_idle_per_host =
+            Self::read_env_usize(RPC_POOL_MAX_IDLE_PER_HOST_ENV, DEFAULT_RPC_POOL_MAX_IDLE_PER_HOST);
+        Self::try_new_with_pool_max_idle_per_host(base_url, timing, rpc_pool_max_idle_per_host)
+    }
+
+    fn try_new_with_pool_max_idle_per_host(
+        base_url: &str,
+        timing: Arc<RpcTimingRecorder>,
+        rpc_pool_max_idle_per_host: usize,
+    ) -> anyhow::Result<Self> {
         let starknet_rpc_url = format!("{}/rpc/{}", base_url, STARKNET_RPC_VERSION);
         info!("Initializing Starknet RPC client with URL: {}", starknet_rpc_url);
 
         let rpc_request_timeout_secs = Self::read_env_u64(RPC_REQUEST_TIMEOUT_ENV, DEFAULT_RPC_REQUEST_TIMEOUT_SECS);
         let rpc_connect_timeout_secs = Self::read_env_u64(RPC_CONNECT_TIMEOUT_ENV, DEFAULT_RPC_CONNECT_TIMEOUT_SECS);
-        let rpc_pool_max_idle_per_host =
-            Self::read_env_usize(RPC_POOL_MAX_IDLE_PER_HOST_ENV, DEFAULT_RPC_POOL_MAX_IDLE_PER_HOST);
         info!(
             "RPC client config: request_timeout={}s connect_timeout={}s pool_max_idle_per_host={}",
             rpc_request_timeout_secs, rpc_connect_timeout_secs, rpc_pool_max_idle_per_host
@@ -488,11 +496,62 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::Arc;
+    use std::thread;
 
+    use blockifier::state::state_api::StateReader;
+    use starknet::core::types::BlockId;
+    use starknet_api::core::ContractAddress;
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::state_reader::AsyncRpcStateReader;
+
+    fn serve_json_rpc_request(stream: &mut TcpStream) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut content_length = 0;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            if header == "\r\n" {
+                break;
+            }
+            if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                content_length = value.trim().parse().unwrap();
+            }
+        }
+
+        reader.read_exact(&mut vec![0; content_length]).unwrap();
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":"0x0"}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: keep-alive\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn start_json_rpc_server() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut async_connection, _) = listener.accept().unwrap();
+            serve_json_rpc_request(&mut async_connection);
+
+            let (mut isolated_connection, _) = listener.accept().unwrap();
+            serve_json_rpc_request(&mut isolated_connection);
+
+            // The normal clone must return to the first keep-alive connection.
+            serve_json_rpc_request(&mut async_connection);
+        });
+
+        (format!("http://{address}"), server)
+    }
 
     #[test]
     fn isolated_clone_has_its_own_connection_pool() {
@@ -502,6 +561,26 @@ mod tests {
         assert!(!Arc::ptr_eq(&client.inner, &isolated.inner));
         assert_eq!(client.inner.base_url, isolated.inner.base_url);
         assert!(Arc::ptr_eq(&client.inner.timing, &isolated.inner.timing));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn isolated_clone_keeps_sync_state_reads_off_async_connection_pool() {
+        let (base_url, server) = start_json_rpc_server();
+        let inner =
+            RpcClientInner::try_new_with_pool_max_idle_per_host(&base_url, Arc::new(RpcTimingRecorder::default()), 1)
+                .unwrap();
+        let client = RpcClient { inner: Arc::new(inner) };
+        let block_id = BlockId::Number(1);
+        let contract_address = ContractAddress::try_from(Felt::ONE).unwrap();
+
+        client.starknet_rpc().get_nonce(block_id, *contract_address.key()).await.unwrap();
+
+        let state_reader = AsyncRpcStateReader::new(client.try_clone_isolated().unwrap(), Some(block_id));
+        tokio::task::spawn_blocking(move || state_reader.get_nonce_at(contract_address)).await.unwrap().unwrap();
+
+        client.clone().starknet_rpc().get_nonce(block_id, *contract_address.key()).await.unwrap();
+
+        server.join().unwrap();
     }
 
     fn dummy_contract_proof(chunk_index: usize) -> ContractProof {
