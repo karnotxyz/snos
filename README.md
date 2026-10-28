@@ -194,13 +194,13 @@ This project is licensed under the MIT License. See the [LICENSE](./LICENSE) fil
 ## Committed Data Reads (appchain extension)
 
 This fork supports `get_value(root, key)` at
-`starknet_keccak("committed_data_v1")`. A value is a full felt, not an Oracle-specific
-price. The application must obtain the root from its authenticated storage and
+`starknet_keccak("committed_data_v1")`. Keys and values are full felts.
+The application must obtain the root from its authenticated storage and
 control publication and freshness. A leaf binds `CD_MPT_LEAF_V1`, the complete felt key and value. A compressed
 binary Patricia branch binds `CD_MPT_BRANCH_V1 + bit` and both child hashes using
 Poseidon hash-many. Branch bits increase bottom-up and are below 252. The Cairo OS
-independently checks this path and the returned value. No symbol, price or caller
-semantics are embedded in the commitment. Zero values are distinct from missing keys.
+independently checks this path and the returned value. Application-specific
+semantics are outside the commitment. Zero values are distinct from missing keys.
 
 Supported transaction scope: committed-data reads may only execute within account
 transactions. L1-handler transactions must never reach this primitive, either
