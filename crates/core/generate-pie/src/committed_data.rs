@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use blockifier::execution::syscalls::committed_data::{
     CommittedDataBatchProof, CommittedDataError, CommittedDataProvider, CommittedDataWitness,
-    MAX_COMMITTED_DATA_WITNESSES,
+    MAX_COMMITTED_DATA_READ_KEYS, MAX_COMMITTED_DATA_WITNESSES,
 };
 use serde::Deserialize;
 use starknet_types_core::felt::Felt;
@@ -18,7 +18,9 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024;
 /// One request at a time on cache misses; hot reads never wait on network I/O.
 /// URLs are deliberately excluded from Debug and transport errors.
 pub(crate) struct ReplayWitnesses {
+    initial: Mutex<BTreeMap<Key, CommittedDataWitness>>,
     witnesses: Mutex<BTreeMap<Key, CommittedDataWitness>>,
+    timing_client: Option<rpc_client::RpcClient>,
     fetch: Mutex<()>,
     remote: Option<(reqwest::Client, reqwest::Url)>,
 }
@@ -59,25 +61,52 @@ impl ReplayWitnesses {
                 Ok((client, url))
             })
             .transpose()?;
-        Ok(Arc::new(Self { witnesses: Mutex::new(validated), fetch: Mutex::new(()), remote }))
+        Ok(Arc::new(Self {
+            initial: Mutex::new(validated),
+            witnesses: Mutex::new(BTreeMap::new()),
+            timing_client: None,
+            fetch: Mutex::new(()),
+            remote,
+        }))
     }
 
-    /// Moves collected witnesses into OS input after every replay worker has finished.
-    pub fn take_all(&self) -> Result<Vec<CommittedDataWitness>, CommittedDataError> {
-        let witnesses = {
-            let mut cache = self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?;
-            std::mem::take(&mut *cache)
-        };
+    /// Use the ordinary RPC recorder so overlapping witness and state requests count once.
+    pub fn with_timing(mut self: Arc<Self>, client: rpc_client::RpcClient) -> Arc<Self> {
+        Arc::get_mut(&mut self).expect("Witness provider is not shared during initialization").timing_client =
+            Some(client);
+        self
+    }
+
+    /// Keep only witnesses required by admitted execution of this block. Reverted work may
+    /// have populated the bounded transport cache, but must not consume the next block's limit.
+    pub fn collect(&self, keys: &[Key]) -> Result<Vec<CommittedDataWitness>, CommittedDataError> {
+        if keys.len() > MAX_COMMITTED_DATA_WITNESSES {
+            return Err(CommittedDataError::TooManyWitnesses);
+        }
+        let mut witnesses = Vec::with_capacity(keys.len());
+        for group in keys.chunk_by(|left, right| left.0 == right.0) {
+            for chunk in group.chunks(MAX_COMMITTED_DATA_READ_KEYS) {
+                self.prefetch(chunk[0].0, &chunk.iter().map(|(_, key)| *key).collect::<Vec<_>>())?;
+                for key in chunk {
+                    witnesses.push(self.witness(*key)?.ok_or(CommittedDataError::Unavailable)?);
+                }
+            }
+        }
+        Ok(witnesses)
+    }
+
+    #[cfg(test)]
+    fn take_all(&self) -> Result<Vec<CommittedDataWitness>, CommittedDataError> {
+        let mut witnesses = std::mem::take(&mut *self.initial.lock().unwrap());
+        witnesses.extend(std::mem::take(&mut *self.witnesses.lock().unwrap()));
         Ok(witnesses.into_values().collect())
     }
 
-    fn cached(&self, key: Key) -> Result<Option<(Felt, usize)>, CommittedDataError> {
-        Ok(self
-            .witnesses
-            .lock()
-            .map_err(|_| provider_error("Witness cache poisoned"))?
-            .get(&key)
-            .map(|w| (w.value, w.siblings.len())))
+    fn cached(&self, key: Key) -> Result<Option<CommittedDataWitness>, CommittedDataError> {
+        if let Some(witness) = self.initial.lock().map_err(|_| provider_error("Witness cache poisoned"))?.get(&key) {
+            return Ok(Some(witness.clone()));
+        }
+        Ok(self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.get(&key).cloned())
     }
 
     async fn fetch_witness(&self, key: Key) -> Result<Option<CommittedDataWitness>, CommittedDataError> {
@@ -101,6 +130,8 @@ impl ReplayWitnesses {
                 "params": [key.0, key.1]
             }))
         };
+        let _timing =
+            self.timing_client.as_ref().map(|client| client.timing().call_started("get_committed_data_witness"));
         let mut response = request.send().await.map_err(|error| transport_error("request", error))?;
         if !response.status().is_success() {
             return Err(provider_error(format!("Witness RPC returned HTTP {}", response.status().as_u16())));
@@ -115,6 +146,7 @@ impl ReplayWitnesses {
             }
             bytes.extend_from_slice(&chunk);
         }
+        drop(_timing);
         if feeder {
             let witness =
                 serde_json::from_slice(&bytes).map_err(|_| provider_error("Invalid feeder witness response"))?;
@@ -127,16 +159,100 @@ impl ReplayWitnesses {
 
 impl CommittedDataProvider for ReplayWitnesses {
     fn batch(&self, root: Felt, keys: &[Felt]) -> Result<CommittedDataBatchProof, CommittedDataError> {
-        CommittedDataBatchProof::new(root, keys, |key| {
-            // Populate through the same authenticated, bounded fetch path used by single reads.
-            self.value(root, key)?;
-            Ok(self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.get(&(root, key)).cloned())
-        })
+        if keys.is_empty() || keys.len() > MAX_COMMITTED_DATA_READ_KEYS {
+            return Err(provider_error("Invalid witness batch size"));
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread => {
+                // Cache-only callers work on any runtime; an actual miss fails below.
+            }
+            Ok(_) => tokio::task::block_in_place(|| self.prefetch(root, keys))?,
+            Err(_) => self.prefetch(root, keys)?,
+        }
+        CommittedDataBatchProof::new(root, keys, |key| self.witness((root, key)))
     }
-    fn value(&self, root: Felt, index: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError> {
-        let key = (root, index);
-        if let Some(value) = self.cached(key)? {
-            return Ok(Some(value));
+    fn value(&self, root: Felt, key: Felt) -> Result<Option<(Felt, usize)>, CommittedDataError> {
+        Ok(self.witness((root, key))?.map(|witness| (witness.value, witness.siblings.len())))
+    }
+}
+
+impl ReplayWitnesses {
+    /// One feeder request per bounded batch, with compatibility for pre-batch gateways.
+    /// Only a missing route permits legacy reads; malformed/unavailable proofs fail closed.
+    fn prefetch(&self, root: Felt, keys: &[Felt]) -> Result<(), CommittedDataError> {
+        let Some((client, url)) = &self.remote else {
+            return Ok(());
+        };
+        if !url.path().trim_end_matches('/').ends_with("/feeder_gateway") {
+            return Ok(());
+        }
+        let _fetch = self.fetch.lock().map_err(|_| provider_error("Witness fetch gate poisoned"))?;
+        let mut missing = std::collections::BTreeSet::new();
+        for key in keys {
+            if self.cached((root, *key))?.is_none() {
+                missing.insert(*key);
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let keys: Vec<_> = missing.into_iter().collect();
+        let mut endpoint = url.clone();
+        endpoint.set_path(&format!("{}/get_committed_data_witnesses", url.path().trim_end_matches('/')));
+        endpoint
+            .query_pairs_mut()
+            .append_pair("root", &format!("{root:#x}"))
+            .append_pair("keys", &keys.iter().map(|key| format!("{key:#x}")).collect::<Vec<_>>().join(","));
+        let fetched = rpc_client::utils::execute_coroutine(async {
+            let timing =
+                self.timing_client.as_ref().map(|client| client.timing().call_started("get_committed_data_witnesses"));
+            let mut response =
+                client.get(endpoint).send().await.map_err(|error| transport_error("batch request", error))?;
+            if matches!(response.status().as_u16(), 404 | 405) {
+                return Ok(None);
+            }
+            if !response.status().is_success() {
+                return Err(provider_error("Witness batch HTTP failure"));
+            }
+            let limit = keys.len() * MAX_RESPONSE_BYTES;
+            if response.content_length().is_some_and(|size| size > limit as u64) {
+                return Err(provider_error("Oversized witness batch"));
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|error| transport_error("batch body", error))? {
+                if chunk.len() > limit - bytes.len() {
+                    return Err(provider_error("Oversized witness batch"));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            drop(timing);
+            let witnesses: Vec<CommittedDataWitness> =
+                serde_json::from_slice(&bytes).map_err(|_| provider_error("Invalid witness batch"))?;
+            if witnesses.len() != keys.len() {
+                return Err(provider_error("Incomplete witness batch"));
+            }
+            for (key, witness) in keys.iter().zip(&witnesses) {
+                if witness.root != root || witness.key != *key || !witness.verify() {
+                    return Err(CommittedDataError::InvalidWitness);
+                }
+            }
+            Ok(Some(witnesses))
+        })?;
+        if let Some(witnesses) = fetched {
+            let mut cache = self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?;
+            while cache.len() + witnesses.len() > MAX_COMMITTED_DATA_WITNESSES {
+                cache.pop_first();
+            }
+            for witness in witnesses {
+                cache.insert((witness.root, witness.key), witness);
+            }
+        }
+        Ok(())
+    }
+
+    fn witness(&self, key: Key) -> Result<Option<CommittedDataWitness>, CommittedDataError> {
+        if let Some(witness) = self.cached(key)? {
+            return Ok(Some(witness));
         }
         if self.remote.is_none() {
             return Ok(None);
@@ -145,32 +261,27 @@ impl CommittedDataProvider for ReplayWitnesses {
             Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread => {
                 Err(provider_error("RPC witness replay requires a multithread Tokio runtime"))
             }
-            // Mark both lock waiting and network waiting as blocking, so another replay cannot
-            // park the last Tokio worker while the first request needs the I/O driver.
             Ok(_) => tokio::task::block_in_place(|| self.fetch_and_store(key)),
             Err(_) => self.fetch_and_store(key),
         }
     }
-}
 
-impl ReplayWitnesses {
-    fn fetch_and_store(&self, key: Key) -> Result<Option<(Felt, usize)>, CommittedDataError> {
-        // Missing data is fatal to replay, never transformed into a provable contract revert.
+    fn fetch_and_store(&self, key: Key) -> Result<Option<CommittedDataWitness>, CommittedDataError> {
         let _fetch = self.fetch.lock().map_err(|_| provider_error("Witness fetch gate poisoned"))?;
-        if let Some(value) = self.cached(key)? {
-            return Ok(Some(value));
-        }
-        if self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.len()
-            >= MAX_COMMITTED_DATA_WITNESSES
-        {
-            return Err(CommittedDataError::TooManyWitnesses);
+        if let Some(witness) = self.cached(key)? {
+            return Ok(Some(witness));
         }
         let Some(witness) = rpc_client::utils::execute_coroutine(self.fetch_witness(key))? else {
             return Ok(None);
         };
-        let value = (witness.value, witness.siblings.len());
-        self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?.insert(key, witness);
-        Ok(Some(value))
+        let mut cache = self.witnesses.lock().map_err(|_| provider_error("Witness cache poisoned"))?;
+        // This is a transport cache, not a consensus/admission limit. Blocks retain their
+        // own bounded witness vectors; evicting an old fetch cannot invalidate a valid batch.
+        if cache.len() == MAX_COMMITTED_DATA_WITNESSES {
+            cache.pop_first();
+        }
+        cache.insert(key, witness.clone());
+        Ok(Some(witness))
     }
 }
 
@@ -462,5 +573,230 @@ mod tests {
         .unwrap();
         server.join().unwrap();
         assert_eq!(provider.take_all().unwrap(), vec![witness]);
+    }
+
+    /// The transport may retain speculative work, but each OS block gets only admitted keys.
+    #[test]
+    fn collecting_block_inputs_does_not_drain_other_blocks_or_include_unused_witnesses() {
+        let tree =
+            CommittedDataSet::new(vec![(Felt::ZERO, Felt::ONE), (Felt::ONE, Felt::TWO), (Felt::TWO, Felt::THREE)])
+                .unwrap();
+        let all: Vec<_> = tree.entries().iter().map(|(key, _)| tree.witness(*key).unwrap()).collect();
+        let provider = ReplayWitnesses::new(all.clone(), None).unwrap();
+        for key in [Felt::ONE, Felt::ZERO, Felt::ONE] {
+            assert_eq!(provider.collect(&[(tree.root(), key)]).unwrap(), vec![tree.witness(key).unwrap()]);
+        }
+        assert_eq!(provider.take_all().unwrap(), all);
+    }
+
+    /// Real HTTP framing exercises one-request reconstruction, all-or-nothing authentication,
+    /// legacy fallback, and the timing recorder through delayed response-body delivery.
+    #[rstest::rstest]
+    #[case::valid("valid", true)]
+    #[case::missing_route("missing_route", true)]
+    #[case::wrong_order("wrong_order", false)]
+    #[case::corrupt_value("corrupt_value", false)]
+    #[case::incomplete("incomplete", false)]
+    #[case::unavailable("unavailable", false)]
+    #[case::oversized("oversized", false)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn feeder_batch_transport_and_timing(#[case] case: &str, #[case] succeeds: bool) {
+        use std::io::{Read, Write};
+        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::TWO), (Felt::ONE, Felt::MAX)]).unwrap();
+        let keys = [Felt::ZERO, Felt::ONE];
+        let proofs: Vec<_> = keys.iter().map(|key| tree.witness(*key).unwrap()).collect();
+        let mut response = proofs.clone();
+        match case {
+            "wrong_order" => response.reverse(),
+            "corrupt_value" => response[1].value = Felt::ZERO,
+            "incomplete" => {
+                response.pop();
+            }
+            _ => {}
+        }
+        let status = match case {
+            "missing_route" => "404 Not Found",
+            "unavailable" => "503 Unavailable",
+            _ => "200 OK",
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/feeder_gateway", listener.local_addr().unwrap());
+        let expected_requests = if case == "missing_route" { 3 } else { 1 };
+        let oversized = case == "oversized";
+        let server = std::thread::spawn(move || {
+            for request_index in 0..expected_requests {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline, "missing witness request");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buffer = [0; 1024];
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0 && request.len() + count <= 4096);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = std::str::from_utf8(&request).unwrap();
+                let route =
+                    if request_index == 0 { "get_committed_data_witnesses?" } else { "get_committed_data_witness?" };
+                assert!(request.starts_with(&format!("GET /feeder_gateway/{route}")));
+                let body = if request_index == 0 {
+                    serde_json::to_vec(&response).unwrap()
+                } else {
+                    serde_json::to_vec(&Some(proofs[request_index - 1].clone())).unwrap()
+                };
+                let status = if request_index == 0 { status } else { "200 OK" };
+                let length = if oversized { 2 * MAX_RESPONSE_BYTES + 1 } else { body.len() };
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+                if oversized {
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+                // Error responses may be closed without consuming their untrusted body.
+                let _ = stream.write_all(&body);
+            }
+        });
+        let timing = rpc_client::RpcClient::try_new(&endpoint).unwrap();
+        let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap().with_timing(timing.clone());
+        let result = provider.batch(tree.root(), &keys);
+        server.join().unwrap();
+        if succeeds {
+            assert_eq!(result.unwrap(), CommittedDataBatchProof::from_dataset(&tree, &keys).unwrap());
+            // The server is gone: both retained values and the per-block export are now cache hits.
+            assert_eq!(provider.collect(&keys.map(|key| (tree.root(), key))).unwrap().len(), 2);
+        } else {
+            assert!(result.is_err());
+            assert!(provider.take_all().unwrap().is_empty());
+        }
+        let snapshot = timing.timing_snapshot();
+        assert_eq!(snapshot.calls, expected_requests as u64);
+        assert_eq!(snapshot.calls_by_method["get_committed_data_witnesses"], 1);
+        if succeeds {
+            assert!(snapshot.wait_elapsed >= Duration::from_millis(25));
+        }
+    }
+
+    /// Ten legal block read sets cross the old job-wide cap. Exercise real HTTP fetches,
+    /// both ABIs, speculative reads discarded on revert, root rotation, and cache eviction.
+    #[test]
+    fn multi_block_replay_collects_more_than_one_block_witness_budget() {
+        use blockifier::execution::syscalls::committed_data::{
+            read_values_shared, CommittedDataReadSet, CommittedDataWitnesses,
+        };
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const BLOCKS: usize = 10;
+        const KEYS_PER_BLOCK: usize = 7000;
+        assert!(BLOCKS * KEYS_PER_BLOCK > MAX_COMMITTED_DATA_WITNESSES);
+        let trees: Vec<_> = (0..BLOCKS)
+            .map(|block| {
+                CommittedDataSet::new(
+                    (0..=KEYS_PER_BLOCK).map(|key| (Felt::from(key), Felt::from(block + key))).collect(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let roots: Vec<_> = trees.iter().map(CommittedDataSet::root).collect();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/feeder_gateway", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = stop.clone();
+        let server = std::thread::spawn(move || {
+            let trees: BTreeMap<_, _> = trees.into_iter().map(|tree| (tree.root(), tree)).collect();
+            while !server_stop.load(Ordering::Relaxed) {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buffer = [0; 4096];
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0 && request.len() + count <= 128 * 1024);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = std::str::from_utf8(&request).unwrap();
+                let url =
+                    reqwest::Url::parse(&format!("http://localhost{}", request.split_whitespace().nth(1).unwrap()))
+                        .unwrap();
+                let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+                let root = Felt::from_hex(&query["root"]).unwrap();
+                let tree = &trees[&root];
+                let body = if let Some(keys) = query.get("keys") {
+                    let proofs: Vec<_> =
+                        keys.split(',').map(|key| tree.witness(Felt::from_hex(key).unwrap()).unwrap()).collect();
+                    serde_json::to_vec(&proofs).unwrap()
+                } else {
+                    serde_json::to_vec(&tree.witness(Felt::from_hex(&query["key"]).unwrap())).unwrap()
+                };
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                    .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        // Always stop the fixture server, including when an assertion below panics.
+        struct StopServer(Arc<AtomicBool>);
+        impl Drop for StopServer {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let stop_server = StopServer(stop);
+        let provider = ReplayWitnesses::new(Vec::new(), Some(&endpoint)).unwrap();
+        let witnesses = CommittedDataWitnesses::from_provider(provider.clone());
+        let single = starknet_api::abi::abi_utils::selector_from_name("get_value").0;
+        let batch = starknet_api::abi::abi_utils::selector_from_name("get_values").0;
+        let mut total = 0;
+        for root in &roots {
+            let accepted = CommittedDataReadSet::default();
+            let discarded = accepted.fork();
+            let mut speculative_gas = u64::MAX;
+            read_values_shared(
+                true,
+                &witnesses,
+                &discarded,
+                single,
+                &[*root, Felt::from(KEYS_PER_BLOCK)],
+                &mut speculative_gas,
+                &mut None,
+            )
+            .unwrap();
+            assert!(accepted.is_empty());
+            let mut gas = u64::MAX;
+            read_values_shared(true, &witnesses, &accepted, single, &[*root, Felt::ZERO], &mut gas, &mut None).unwrap();
+            let keys: Vec<_> = (1..KEYS_PER_BLOCK).map(Felt::from).collect();
+            for keys in keys.chunks(MAX_COMMITTED_DATA_READ_KEYS) {
+                let mut calldata = vec![*root, Felt::from(keys.len())];
+                calldata.extend_from_slice(keys);
+                read_values_shared(true, &witnesses, &accepted, batch, &calldata, &mut gas, &mut None).unwrap();
+            }
+            let required = accepted.witness_keys();
+            assert_eq!(required.len(), KEYS_PER_BLOCK);
+            assert!(!required.contains(&(*root, Felt::from(KEYS_PER_BLOCK))));
+            assert_eq!(provider.collect(&required).unwrap().len(), KEYS_PER_BLOCK);
+            total += required.len();
+        }
+        assert_eq!(total, BLOCKS * KEYS_PER_BLOCK);
+        assert!(provider.witnesses.lock().unwrap().len() <= MAX_COMMITTED_DATA_WITNESSES);
+        // Old block witnesses remain recoverable after the shared transport cache evicts them.
+        let first: Vec<_> = (0..KEYS_PER_BLOCK).map(|key| (roots[0], Felt::from(key))).collect();
+        assert_eq!(provider.collect(&first).unwrap().len(), KEYS_PER_BLOCK);
+        drop(stop_server);
+        server.join().unwrap();
     }
 }

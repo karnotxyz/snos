@@ -73,7 +73,7 @@ pub async fn collect_single_block_info(
     chain_config: &crate::types::ChainConfig,
     versioned_constants: Option<blockifier::blockifier_versioned_constants::VersionedConstants>,
     rpc_client: RpcClient,
-    committed_data_witnesses: std::sync::Arc<blockifier::execution::syscalls::committed_data::CommittedDataWitnesses>,
+    committed_data_witnesses: std::sync::Arc<crate::committed_data::ReplayWitnesses>,
     use_committed_data: bool,
 ) -> Result<BlockInfoResult, BlockProcessingError> {
     info!("Starting block info collection for block {}", block_number);
@@ -91,7 +91,10 @@ pub async fn collect_single_block_info(
         )
         .map_err(BlockProcessingError::ContextBuilding)?;
 
-    block_context.committed_data_witnesses = committed_data_witnesses;
+    block_context.committed_data_witnesses =
+        std::sync::Arc::new(blockifier::execution::syscalls::committed_data::CommittedDataWitnesses::from_provider(
+            committed_data_witnesses.clone(),
+        ));
     block_context.use_committed_data = use_committed_data;
 
     // Step 3: Process transactions and extract execution information
@@ -115,8 +118,22 @@ pub async fn collect_single_block_info(
     let mut class_hashes_to_migrate = tx_result.class_hashes_to_migrate.clone();
     class_hashes_to_migrate.sort_by_key(|(class_hash, _)| class_hash.0);
 
+    // Materialize only this block's surviving read set, after reverted work is discarded.
+    let provider = committed_data_witnesses;
+    let keys = tx_result.committed_data_witness_keys.clone();
+    let witnesses = tokio::task::spawn_blocking(move || provider.collect(&keys))
+        .await
+        .map_err(|error| BlockProcessingError::StateUpdateProcessing(error.to_string()))?
+        .map_err(|error| {
+            BlockProcessingError::TransactionExecution(
+                blockifier::blockifier::transaction_executor::TransactionExecutorError::TransactionExecutionError(
+                    blockifier::transaction::errors::TransactionExecutionError::CommittedDataAvailability(error),
+                ),
+            )
+        })?;
+
     // Step 8: Build final OS block input
-    let os_block_input = build_os_block_input(
+    let mut os_block_input = build_os_block_input(
         &block_data,
         tx_result,
         commitment_result,
@@ -125,6 +142,7 @@ pub async fn collect_single_block_info(
         class_hashes_to_migrate,
     )?;
 
+    os_block_input.committed_data_witnesses = witnesses;
     info!("Successfully completed construction of OsBlockInput for block {}", block_number);
 
     Ok(BlockInfoResult { os_block_input, compiled_classes, deprecated_compiled_classes })
@@ -146,6 +164,7 @@ fn build_os_block_input(
     info!("Building OS block input");
 
     Ok(OsBlockInput {
+        committed_data_witnesses: Vec::new(),
         contract_state_commitment_info: commitment_result.contract_state_commitment_info,
         contract_class_commitment_info: commitment_result.contract_class_commitment_info,
         address_to_storage_commitment_info: commitment_result.address_to_storage_commitment_info,

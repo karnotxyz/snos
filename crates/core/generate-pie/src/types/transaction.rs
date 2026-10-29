@@ -17,6 +17,8 @@ use std::collections::{HashMap, HashSet};
 /// Result containing processed transaction data.
 #[derive(Debug)]
 pub struct TransactionProcessingResult {
+    /// Surviving single and batch reads; speculative/reverted execution is excluded.
+    pub committed_data_witness_keys: Vec<(Felt252, Felt252)>,
     /// Transactions in sequencer::starknet_api format
     pub starknet_api_txns: Vec<starknet_api::executable_transaction::Transaction>,
     pub central_txn_execution_infos: Vec<CentralTransactionExecutionInfo>,

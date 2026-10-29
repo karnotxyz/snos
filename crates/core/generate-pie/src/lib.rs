@@ -171,19 +171,13 @@ pub async fn generate_pie(mut input: PieGenerationInput) -> Result<PieGeneration
     input.validate()?;
     info!("Input configuration validated successfully");
 
+    let rpc_client = RpcClient::try_new(&input.rpc_url)
+        .map_err(|e| PieGenerationError::RpcClient(format!("Failed to initialize RPC client: {:?}", e)))?;
     let replay_witnesses = committed_data::ReplayWitnesses::new(
         std::mem::take(&mut input.os_hints_config.committed_data_witnesses),
         input.committed_data_rpc_url.as_deref(),
-    )?;
-    let committed_data_witnesses =
-        Arc::new(blockifier::execution::syscalls::committed_data::CommittedDataWitnesses::from_provider(
-            replay_witnesses.clone(),
-        ));
-
-    // Initialize RPC client
-    let rpc_client = RpcClient::try_new(&input.rpc_url)
-        .map_err(|e| PieGenerationError::RpcClient(format!("Failed to initialize RPC client: {:?}", e)))?;
-    info!("RPC client initialized");
+    )?
+    .with_timing(rpc_client.clone());
 
     // Create semaphore to limit parallel execution to available CPU cores
     let default_max_parallel_blocks =
@@ -201,7 +195,7 @@ pub async fn generate_pie(mut input: PieGenerationInput) -> Result<PieGeneration
         let versioned_constants = input.versioned_constants.clone();
         let total_blocks = input.blocks.len();
         let sem = semaphore.clone();
-        let committed_data_witnesses = committed_data_witnesses.clone();
+        let committed_data_witnesses = replay_witnesses.clone();
         let use_committed_data = input.os_hints_config.use_committed_data;
 
         tokio::spawn(async move {
@@ -280,9 +274,7 @@ pub async fn generate_pie(mut input: PieGenerationInput) -> Result<PieGeneration
             public_keys: input.public_keys.clone(),
             rng_seed_salt: None,
             use_committed_data: input.os_hints_config.use_committed_data,
-            committed_data_witnesses: replay_witnesses
-                .take_all()
-                .map_err(|error| PieGenerationError::InvalidConfig(error.to_string()))?,
+            committed_data_witnesses: Vec::new(),
         },
         os_input: StarknetOsInput { os_block_inputs, deprecated_compiled_classes, compiled_classes },
     };

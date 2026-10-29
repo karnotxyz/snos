@@ -51,7 +51,8 @@ pub struct RpcTimingRecorder {
 }
 
 // Close the interval on cancellation as well as normal completion.
-struct RpcCallGuard<'a> {
+/// Records the complete request interval, including cancellation and response-body reads.
+pub struct RpcCallGuard<'a> {
     timing: &'a RpcTimingRecorder,
     started_at: Instant,
     method_name: String,
@@ -87,7 +88,8 @@ impl RpcTimingRecorder {
         }
     }
 
-    fn call_started(&self, operation_name: &str) -> RpcCallGuard<'_> {
+    /// Start one request on the shared recorder; overlapping calls contribute wall time once.
+    pub fn call_started(&self, operation_name: &str) -> RpcCallGuard<'_> {
         let now = Instant::now();
         let mut state = self.state.lock().expect("RPC timing mutex poisoned");
 
