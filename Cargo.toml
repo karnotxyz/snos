@@ -18,20 +18,20 @@ license-file = "LICENSE"
 
 [workspace.dependencies]
 # Committed Data Reads: pin one coherent sequencer fork for execution and proving.
-starknet_api = { git = "https://github.com/karnotxyz/sequencer", rev = "16a85c96ca9ac953aba5aa7dd4363b5cbbed7aab", features = [
+starknet_api = { git = "https://github.com/madara-alliance/sequencer", rev = "3fe9f3d9606fb640a915fe9793d021966d309a2a", features = [
   "testing",
 ] }
-starknet_os = { git = "https://github.com/karnotxyz/sequencer", rev = "16a85c96ca9ac953aba5aa7dd4363b5cbbed7aab", features = [
+starknet_os = { git = "https://github.com/madara-alliance/sequencer", rev = "3fe9f3d9606fb640a915fe9793d021966d309a2a", features = [
   "testing",
 ] }
-blockifier = { git = "https://github.com/karnotxyz/sequencer", rev = "16a85c96ca9ac953aba5aa7dd4363b5cbbed7aab", features = [
+blockifier = { git = "https://github.com/madara-alliance/sequencer", rev = "3fe9f3d9606fb640a915fe9793d021966d309a2a", features = [
   "testing",
   "reexecution",
 ] }
-starknet_patricia = { git = "https://github.com/karnotxyz/sequencer", rev = "16a85c96ca9ac953aba5aa7dd4363b5cbbed7aab", features = [
+starknet_patricia = { git = "https://github.com/madara-alliance/sequencer", rev = "3fe9f3d9606fb640a915fe9793d021966d309a2a", features = [
   "testing",
 ] }
-shared_execution_objects = { git = "https://github.com/karnotxyz/sequencer", rev = "16a85c96ca9ac953aba5aa7dd4363b5cbbed7aab" }
+shared_execution_objects = { git = "https://github.com/madara-alliance/sequencer", rev = "3fe9f3d9606fb640a915fe9793d021966d309a2a" }
 
 cairo-lang-starknet = "=2.17.0-rc.4"
 cairo-lang-starknet-classes = "=2.17.0-rc.4"

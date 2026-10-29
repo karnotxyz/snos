@@ -265,7 +265,16 @@ impl BlockData {
             }
         };
 
-        let blockifier_state_reader = AsyncRpcStateReader::new(rpc_client.clone(), previous_block_id);
+        // Blockifier calls the synchronous StateReader API from worker threads. Give
+        // those calls an independent HTTP pool that is driven only by the dedicated
+        // sync runtime; reusing the async preparation pool can leave the first state
+        // read parked on a connection owned by another runtime until request timeout.
+        let blockifier_state_reader = AsyncRpcStateReader::new(
+            rpc_client
+                .try_clone_isolated()
+                .map_err(|source| BlockProcessingError::RpcClient(source.into_boxed_dyn_error()))?,
+            previous_block_id,
+        );
 
         // Blockifier must be pre-processed with the boundary old block hash so `get_block_hash`
         // syscalls observe the same block-hash mapping semantics as the official sequencer path.
@@ -279,24 +288,32 @@ impl BlockData {
         info!("Transaction executor created successfully");
         info!("Executing {} transactions using Blockifier", blockifier_txns.len());
 
-        // Execute transactions
+        // Blockifier execution is synchronous and can perform many RPC-backed state
+        // reads. Keep it off the async executor so its HTTP reactor remains free to
+        // drive pooled connections while this task waits for execution to finish.
         let execution_deadline = None;
-        let execution_outputs: Vec<_> = txn_executor
-            .execute_txs(&blockifier_txns, execution_deadline)
-            .into_iter()
-            .collect::<Result<_, TransactionExecutorError>>()
-            .map_err(BlockProcessingError::TransactionExecution)?;
+        let transaction_count = blockifier_txns.len();
+        let (txn_executor, execution_outputs) = tokio::task::spawn_blocking(move || {
+            let execution_outputs = txn_executor
+                .execute_txs(&blockifier_txns, execution_deadline)
+                .into_iter()
+                .collect::<Result<Vec<_>, TransactionExecutorError>>()?;
+            Ok::<_, TransactionExecutorError>((txn_executor, execution_outputs))
+        })
+        .await
+        .map_err(|source| BlockProcessingError::TransactionExecutionTask { source })?
+        .map_err(BlockProcessingError::TransactionExecution)?;
 
         // BlockFull stops the executor without adding an error result. Never build a PIE
         // for a prefix while claiming to have replayed the complete accepted block.
-        if execution_outputs.len() != blockifier_txns.len() {
+        if execution_outputs.len() != transaction_count {
             return Err(BlockProcessingError::InvalidBlockState(format!(
                 "Replay admitted {} of {} accepted transactions",
                 execution_outputs.len(),
-                blockifier_txns.len()
+                transaction_count
             )));
         }
-        info!("{} transactions executed successfully", blockifier_txns.len());
+        info!("{} transactions executed successfully", transaction_count);
 
         let txn_execution_infos: Vec<TransactionExecutionInfo> =
             execution_outputs.into_iter().map(|(execution_info, _)| execution_info).collect();
@@ -398,11 +415,14 @@ impl BlockData {
         );
 
         populate_alias_contract_keys(&accessed_addresses, &accessed_classes, &mut accessed_keys_by_address);
-        extend_initial_reads_storage(&blockifier_state_reader, &mut initial_reads, &accessed_keys_by_address)
+        // These calls are async again, so keep them on the original async client and
+        // its pool instead of crossing the sync-runtime boundary in the other direction.
+        let async_state_reader = AsyncRpcStateReader::new(rpc_client.clone(), previous_block_id);
+        extend_initial_reads_storage(&async_state_reader, &mut initial_reads, &accessed_keys_by_address)
             .await
             .map_err(|source| BlockProcessingError::InitialReadsExtension { source })?;
         ensure_alias_contract_initial_reads_consistency(
-            &blockifier_state_reader,
+            &async_state_reader,
             &mut initial_reads,
             &processed_state_update.thin_state_diff,
         )
