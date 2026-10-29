@@ -19,6 +19,9 @@ use crate::types::{ChainConfig, OsHintsConfiguration};
 ///
 /// let input = PieGenerationInput {
 ///     rpc_url: "https://your-starknet-node.com".to_string(),
+///     committed_data_rpc_url: None,
+///     layout: cairo_vm::types::layout_name::LayoutName::all_cairo,
+///     versioned_constants: None,
 ///     blocks: vec![12345, 12346],
 ///     chain_config: ChainConfig::default(),
 ///     os_hints_config: OsHintsConfiguration::default(),
@@ -26,10 +29,14 @@ use crate::types::{ChainConfig, OsHintsConfiguration};
 ///     public_keys: None,
 /// };
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PieGenerationInput {
     /// The RPC URL of the Starknet node to connect to.
     pub rpc_url: String,
+    /// Optional operator-configured Madara feeder gateway; fetches authenticated witnesses on demand.
+    /// Inline witnesses remain supported for air-gapped proving and reproducible inputs.
+    pub committed_data_rpc_url: Option<String>,
     /// The list of block numbers to process for PIE generation.
     pub blocks: Vec<u64>,
     /// Layout to be used for SNOS
@@ -37,10 +44,12 @@ pub struct PieGenerationInput {
     /// Chain-specific configuration settings.
     pub chain_config: ChainConfig,
     /// OS hints and execution configuration.
+    #[serde(default)]
     pub os_hints_config: OsHintsConfiguration,
     /// Optional output file path for the generated PIE file.
     pub output_path: Option<String>,
     /// Optional versioned constants to use instead of auto-detecting from block version.
+    #[serde(default, deserialize_with = "deserialize_versioned_constants")]
     pub versioned_constants: Option<VersionedConstants>,
     /// Optional public keys to use for OS execution.
     pub public_keys: Option<Vec<Felt>>,
@@ -68,10 +77,19 @@ impl PieGenerationInput {
         }
 
         // Validate that blocks are in ascending order
-        let mut sorted_blocks = self.blocks.clone();
-        sorted_blocks.sort();
-        if sorted_blocks != self.blocks {
+        if !self.blocks.is_sorted() {
             return Err(PieGenerationError::InvalidConfig("Blocks must be specified in ascending order".to_string()));
+        }
+
+        if self.os_hints_config.committed_data_witnesses.len()
+            > blockifier::execution::syscalls::committed_data::MAX_COMMITTED_DATA_WITNESSES
+        {
+            return Err(PieGenerationError::InvalidConfig("Too many committed-data witnesses".into()));
+        }
+        if !self.os_hints_config.use_committed_data
+            && (!self.os_hints_config.committed_data_witnesses.is_empty() || self.committed_data_rpc_url.is_some())
+        {
+            return Err(PieGenerationError::InvalidConfig("Witnesses require use_committed_data=true".into()));
         }
 
         // Validate chain configuration
@@ -107,4 +125,12 @@ pub struct PieGenerationTiming {
     pub execution_time_ms: u64,
     /// RPC calls grouped by method name, including a `total` entry.
     pub rpc_calls_by_method: HashMap<String, u64>,
+}
+
+fn deserialize_versioned_constants<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<VersionedConstants>, D::Error> {
+    use serde::Deserialize;
+    Option::<blockifier::blockifier_versioned_constants::RawVersionedConstants>::deserialize(deserializer)
+        .map(|value| value.map(Into::into))
 }

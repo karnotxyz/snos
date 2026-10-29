@@ -26,6 +26,7 @@ const MAX_BACKOFF_MS: u64 = 5000;
 pub struct RpcTimingSnapshot {
     pub wait_elapsed: Duration,
     pub cumulative_call_elapsed: Duration,
+    /// Finished attempts, including errors and cancellation.
     pub calls: u64,
     pub calls_by_method: HashMap<String, u64>,
 }
@@ -49,10 +50,29 @@ pub struct RpcTimingRecorder {
     state: Mutex<RpcTimingState>,
 }
 
+// Close the interval on cancellation as well as normal completion.
+/// Records the complete request interval, including cancellation and response-body reads.
+pub struct RpcCallGuard<'a> {
+    timing: &'a RpcTimingRecorder,
+    started_at: Instant,
+    method_name: String,
+}
+
+impl Drop for RpcCallGuard<'_> {
+    fn drop(&mut self) {
+        self.timing.call_finished(self.started_at, &self.method_name);
+    }
+}
+
 /// Gets or creates the global Tokio runtime.
 fn get_global_runtime() -> &'static tokio::runtime::Runtime {
     GLOBAL_RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("Failed to create global Tokio runtime")
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("snos-rpc-runtime")
+            .enable_all()
+            .build()
+            .expect("Failed to create global Tokio runtime")
     })
 }
 
@@ -73,7 +93,8 @@ impl RpcTimingRecorder {
         }
     }
 
-    fn call_started(&self, operation_name: &str) -> (Instant, String) {
+    /// Start one request on the shared recorder; overlapping calls contribute wall time once.
+    pub fn call_started(&self, operation_name: &str) -> RpcCallGuard<'_> {
         let now = Instant::now();
         let mut state = self.state.lock().expect("RPC timing mutex poisoned");
 
@@ -82,7 +103,7 @@ impl RpcTimingRecorder {
         }
         state.active_calls += 1;
 
-        (now, rpc_method_name(operation_name).to_string())
+        RpcCallGuard { timing: self, started_at: now, method_name: rpc_method_name(operation_name).to_string() }
     }
 
     fn call_finished(&self, call_started_at: Instant, method_name: &str) {
@@ -121,9 +142,9 @@ fn rpc_method_name(operation_name: &str) -> &str {
 /// block on a coroutine but want to maintain the current runtime context. It's particularly
 /// helpful when integrating async code with synchronous interfaces.
 ///
-/// This function works in two modes:
-/// 1. If called from within a Tokio runtime context, it uses the current runtime
-/// 2. If called from outside a runtime (e.g., worker threads), it uses a global runtime
+/// All synchronous state reads are driven by the same dedicated runtime. This keeps
+/// the HTTP reactor stable when Blockifier moves state-reader calls between worker
+/// threads.
 ///
 /// # Arguments
 ///
@@ -135,24 +156,18 @@ fn rpc_method_name(operation_name: &str) -> &str {
 ///
 /// # Note
 ///
-/// This function will create a global multi-threaded Tokio runtime on first use
-/// if called outside a runtime context. This makes it safe to use from any thread,
-/// including worker threads spawned by external libraries.
+/// This function creates one two-worker runtime on first use. It deliberately avoids
+/// creating a runtime per state read, since a SNOS job can perform tens of thousands
+/// of reads.
 pub fn execute_coroutine<F, T>(coroutine: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
-    // Try to use the current runtime if available (e.g., when in an async context)
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // We're in a runtime context, use block_in_place for efficiency
-            tokio::task::block_in_place(|| handle.block_on(coroutine))
-        }
-        Err(_) => {
-            // No current runtime (e.g., called from a worker thread), use global runtime
-            let runtime = get_global_runtime();
-            runtime.block_on(coroutine)
-        }
+    let runtime = get_global_runtime();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(|| runtime.block_on(coroutine))
+    } else {
+        runtime.block_on(coroutine)
     }
 }
 
@@ -172,9 +187,10 @@ where
     loop {
         attempts += 1;
 
-        let (call_started_at, method_name) = timing.call_started(operation_name);
-        let result = f().await;
-        timing.call_finished(call_started_at, &method_name);
+        let result = {
+            let _call = timing.call_started(operation_name);
+            f().await
+        };
 
         match result {
             Ok(result) => {
@@ -295,10 +311,37 @@ mod tests {
         assert!(!second.calls_by_method.contains_key("first_method"));
     }
 
+    #[tokio::test]
+    async fn cancelled_rpc_closes_timing_interval() {
+        let timing = RpcTimingRecorder::default();
+        let mut request =
+            Box::pin(execute_with_retry(&timing, "cancelled", std::future::pending::<Result<(), ProviderError>>));
+        // Poll exactly once so the request starts, without relying on a timeout race.
+        assert!(futures::poll!(&mut request).is_pending());
+        drop(request);
+        let after_cancel = timing.snapshot();
+        assert_eq!(after_cancel.calls, 1);
+        assert_eq!(timing.state.lock().unwrap().active_calls, 0);
+        assert_eq!(timing.snapshot().wait_elapsed, after_cancel.wait_elapsed);
+
+        execute_with_retry(&timing, "next", || async { Ok::<_, ProviderError>(()) }).await.unwrap();
+        assert_eq!(timing.snapshot().calls, 2);
+        assert_eq!(timing.state.lock().unwrap().active_calls, 0);
+    }
+
     #[test]
     fn rpc_method_name_normalizes_state_reader_helpers_to_rpc_methods() {
         assert_eq!(rpc_method_name("get_nonce_at(contract: 0x123)"), "get_nonce");
         assert_eq!(rpc_method_name("get_compiled_class_hash_v2(class_hash: 0x456)"), "get_class");
         assert_eq!(rpc_method_name("get_proof(block_number: 1, keys: 3)"), "get_proof");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sync_bridge_uses_dedicated_runtime() {
+        let thread_name = execute_coroutine(async {
+            tokio::spawn(async { std::thread::current().name().map(str::to_owned) }).await.unwrap()
+        });
+
+        assert_eq!(thread_name.as_deref(), Some("snos-rpc-runtime"));
     }
 }

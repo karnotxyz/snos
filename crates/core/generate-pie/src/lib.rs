@@ -26,17 +26,21 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```no_run
 //! use generate_pie::{generate_pie, ChainConfig, OsHintsConfiguration, PieGenerationInput};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let input = PieGenerationInput {
 //!         rpc_url: "https://your-starknet-node.com".to_string(),
+//!         committed_data_rpc_url: None,
+//!         layout: cairo_vm::types::layout_name::LayoutName::all_cairo,
+//!         versioned_constants: None,
 //!         blocks: vec![12345, 12346],
 //!         chain_config: ChainConfig::default(),
 //!         os_hints_config: OsHintsConfiguration::default(),
 //!         output_path: Some("output.pie".to_string()),
+//!         public_keys: None,
 //!     };
 //!
 //!     let result = generate_pie(input).await?;
@@ -78,9 +82,9 @@ use starknet_os::{
 use tokio::sync::Semaphore;
 // Local module imports
 use crate::constants::{DEFAULT_MAX_PARALLEL_BLOCKS, MAX_EXECUTION_STEPS_WARNING_THRESHOLD};
-use block_processor::collect_single_block_info;
 use error::PieGenerationError;
-use types::{PieGenerationInput, PieGenerationResult, PieGenerationTiming};
+use types::PieGenerationTiming;
+pub use types::{ChainConfig, OsHintsConfiguration, PieGenerationInput, PieGenerationResult};
 use utils::sort_abi_entries_for_deprecated_class;
 
 const MAX_PARALLEL_BLOCKS_ENV: &str = "SNOS_MAX_PARALLEL_BLOCKS";
@@ -98,6 +102,7 @@ fn read_max_parallel_blocks(default: usize) -> usize {
 // ================================================================================================
 
 mod block_processor;
+mod committed_data;
 pub mod constants;
 mod conversions;
 mod state_update;
@@ -136,17 +141,21 @@ pub mod types;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```no_run
 /// use generate_pie::{generate_pie, PieGenerationInput, ChainConfig, OsHintsConfiguration};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let input = PieGenerationInput {
 ///         rpc_url: "https://your-starknet-node.com".to_string(),
+///         committed_data_rpc_url: None,
+///         layout: cairo_vm::types::layout_name::LayoutName::all_cairo,
+///         versioned_constants: None,
 ///         blocks: vec![12345],
 ///         chain_config: ChainConfig::default(),
 ///         os_hints_config: OsHintsConfiguration::default(),
 ///         output_path: Some("output.pie".to_string()),
+///         public_keys: None,
 ///     };
 ///
 ///     let result = generate_pie(input).await?;
@@ -154,7 +163,7 @@ pub mod types;
 ///     Ok(())
 /// }
 /// ```
-pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResult, PieGenerationError> {
+pub async fn generate_pie(mut input: PieGenerationInput) -> Result<PieGenerationResult, PieGenerationError> {
     let snos_started_at = Instant::now();
     info!("Starting PIE generation for {} blocks: {:?}", input.blocks.len(), input.blocks);
 
@@ -162,10 +171,13 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
     input.validate()?;
     info!("Input configuration validated successfully");
 
-    // Initialize RPC client
     let rpc_client = RpcClient::try_new(&input.rpc_url)
         .map_err(|e| PieGenerationError::RpcClient(format!("Failed to initialize RPC client: {:?}", e)))?;
-    info!("RPC client initialized for {}", input.rpc_url);
+    let replay_witnesses = committed_data::ReplayWitnesses::new(
+        std::mem::take(&mut input.os_hints_config.committed_data_witnesses),
+        input.committed_data_rpc_url.as_deref(),
+    )?
+    .with_timing(rpc_client.clone());
 
     // Create semaphore to limit parallel execution to available CPU cores
     let default_max_parallel_blocks =
@@ -179,12 +191,12 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
     let block_tasks = input.blocks.iter().enumerate().map(|(index, block_number)| {
         let block_number = *block_number;
         let rpc_client = rpc_client.clone();
-        let is_l3 = input.chain_config.is_l3;
-        let strk_fee_token_address = input.chain_config.strk_fee_token_address;
-        let eth_fee_token_address = input.chain_config.eth_fee_token_address;
+        let chain_config = input.chain_config.clone();
         let versioned_constants = input.versioned_constants.clone();
         let total_blocks = input.blocks.len();
         let sem = semaphore.clone();
+        let committed_data_witnesses = replay_witnesses.clone();
+        let use_committed_data = input.os_hints_config.use_committed_data;
 
         tokio::spawn(async move {
             // Acquire semaphore permit to limit concurrent execution
@@ -193,13 +205,13 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
 
             // Collect block information
             info!("Starting to collect block info for block {}", block_number);
-            let block_info = collect_single_block_info(
+            let block_info = block_processor::collect_single_block_info(
                 block_number,
-                is_l3,
-                &strk_fee_token_address,
-                &eth_fee_token_address,
+                &chain_config,
                 versioned_constants,
                 rpc_client.clone(),
+                committed_data_witnesses,
+                use_committed_data,
             )
             .await
             .map_err(|e| PieGenerationError::BlockProcessing { block_number, source: Box::new(e) })?;
@@ -261,6 +273,8 @@ pub async fn generate_pie(input: PieGenerationInput) -> Result<PieGenerationResu
             },
             public_keys: input.public_keys.clone(),
             rng_seed_salt: None,
+            use_committed_data: input.os_hints_config.use_committed_data,
+            committed_data_witnesses: Vec::new(),
         },
         os_input: StarknetOsInput { os_block_inputs, deprecated_compiled_classes, compiled_classes },
     };
@@ -362,3 +376,6 @@ pub fn parse_public_key(key: &str) -> anyhow::Result<starknet_types_core::felt::
     let trimmed = key.trim();
     Ok(starknet_types_core::felt::Felt::from_hex_unchecked(trimmed))
 }
+
+mod structured_input;
+pub use structured_input::{read_committed_data_witnesses, read_pie_input};
