@@ -178,7 +178,8 @@ impl CommittedDataProvider for ReplayWitnesses {
 
 impl ReplayWitnesses {
     /// One feeder request per bounded batch, with compatibility for pre-batch gateways.
-    /// Only a missing route permits legacy reads; malformed/unavailable proofs fail closed.
+    /// JSON POST keeps wide batches below URI limits. Missing/GET-only routes permit legacy
+    /// single reads; malformed/unavailable proofs fail closed.
     fn prefetch(&self, root: Felt, keys: &[Felt]) -> Result<(), CommittedDataError> {
         let Some((client, url)) = &self.remote else {
             return Ok(());
@@ -199,15 +200,15 @@ impl ReplayWitnesses {
         let keys: Vec<_> = missing.into_iter().collect();
         let mut endpoint = url.clone();
         endpoint.set_path(&format!("{}/get_committed_data_witnesses", url.path().trim_end_matches('/')));
-        endpoint
-            .query_pairs_mut()
-            .append_pair("root", &format!("{root:#x}"))
-            .append_pair("keys", &keys.iter().map(|key| format!("{key:#x}")).collect::<Vec<_>>().join(","));
         let fetched = rpc_client::utils::execute_coroutine(async {
             let timing =
                 self.timing_client.as_ref().map(|client| client.timing().call_started("get_committed_data_witnesses"));
-            let mut response =
-                client.get(endpoint).send().await.map_err(|error| transport_error("batch request", error))?;
+            let mut response = client
+                .post(endpoint)
+                .json(&serde_json::json!({"root": root, "keys": keys}))
+                .send()
+                .await
+                .map_err(|error| transport_error("batch request", error))?;
             if matches!(response.status().as_u16(), 404 | 405) {
                 return Ok(None);
             }
@@ -589,11 +590,36 @@ mod tests {
         assert_eq!(provider.take_all().unwrap(), all);
     }
 
+    /// Read a complete bounded fixture request, including JSON bodies split across TCP packets.
+    fn read_http_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+        use std::io::Read;
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0 && request.len() + count <= 128 * 1024);
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&request[..end]).unwrap();
+                let length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+                if request.len() >= end + 4 + length {
+                    return (headers.to_owned(), request[end + 4..end + 4 + length].to_vec());
+                }
+            }
+        }
+    }
+
     /// Real HTTP framing exercises one-request reconstruction, all-or-nothing authentication,
     /// legacy fallback, and the timing recorder through delayed response-body delivery.
     #[rstest::rstest]
     #[case::valid("valid", true)]
     #[case::missing_route("missing_route", true)]
+    #[case::legacy_get_only("legacy_get_only", true)]
+    #[case::maximum_wide_keys("maximum_wide_keys", true)]
     #[case::wrong_order("wrong_order", false)]
     #[case::corrupt_value("corrupt_value", false)]
     #[case::incomplete("incomplete", false)]
@@ -601,9 +627,14 @@ mod tests {
     #[case::oversized("oversized", false)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn feeder_batch_transport_and_timing(#[case] case: &str, #[case] succeeds: bool) {
-        use std::io::{Read, Write};
-        let tree = CommittedDataSet::new(vec![(Felt::ZERO, Felt::TWO), (Felt::ONE, Felt::MAX)]).unwrap();
-        let keys = [Felt::ZERO, Felt::ONE];
+        use std::io::Write;
+        let entries = if case == "maximum_wide_keys" {
+            (0..MAX_COMMITTED_DATA_READ_KEYS).map(|index| (Felt::MAX - Felt::from(index), Felt::from(index))).collect()
+        } else {
+            vec![(Felt::ZERO, Felt::TWO), (Felt::ONE, Felt::MAX)]
+        };
+        let tree = CommittedDataSet::new(entries).unwrap();
+        let keys: Vec<_> = tree.entries().iter().map(|(key, _)| *key).collect();
         let proofs: Vec<_> = keys.iter().map(|key| tree.witness(*key).unwrap()).collect();
         let mut response = proofs.clone();
         match case {
@@ -616,13 +647,14 @@ mod tests {
         }
         let status = match case {
             "missing_route" => "404 Not Found",
+            "legacy_get_only" => "405 Method Not Allowed",
             "unavailable" => "503 Unavailable",
             _ => "200 OK",
         };
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}/feeder_gateway", listener.local_addr().unwrap());
-        let expected_requests = if case == "missing_route" { 3 } else { 1 };
+        let expected_requests = if matches!(case, "missing_route" | "legacy_get_only") { 3 } else { 1 };
         let oversized = case == "oversized";
         let server = std::thread::spawn(move || {
             for request_index in 0..expected_requests {
@@ -638,17 +670,16 @@ mod tests {
                     }
                 };
                 stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                let mut request = Vec::new();
-                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                    let mut buffer = [0; 1024];
-                    let count = stream.read(&mut buffer).unwrap();
-                    assert!(count > 0 && request.len() + count <= 4096);
-                    request.extend_from_slice(&buffer[..count]);
+                let (headers, body) = read_http_request(&mut stream);
+                if request_index == 0 {
+                    assert!(headers.starts_with("POST /feeder_gateway/get_committed_data_witnesses HTTP/1.1"));
+                    let query: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(query["root"], serde_json::json!(response.first().unwrap().root));
+                    let requested: Vec<Felt> = serde_json::from_value(query["keys"].clone()).unwrap();
+                    assert_eq!(requested, proofs.iter().map(|proof| proof.key).collect::<Vec<_>>());
+                } else {
+                    assert!(headers.starts_with("GET /feeder_gateway/get_committed_data_witness?"));
                 }
-                let request = std::str::from_utf8(&request).unwrap();
-                let route =
-                    if request_index == 0 { "get_committed_data_witnesses?" } else { "get_committed_data_witness?" };
-                assert!(request.starts_with(&format!("GET /feeder_gateway/{route}")));
                 let body = if request_index == 0 {
                     serde_json::to_vec(&response).unwrap()
                 } else {
@@ -672,7 +703,10 @@ mod tests {
         if succeeds {
             assert_eq!(result.unwrap(), CommittedDataBatchProof::from_dataset(&tree, &keys).unwrap());
             // The server is gone: both retained values and the per-block export are now cache hits.
-            assert_eq!(provider.collect(&keys.map(|key| (tree.root(), key))).unwrap().len(), 2);
+            assert_eq!(
+                provider.collect(&keys.iter().map(|key| (tree.root(), *key)).collect::<Vec<_>>()).unwrap().len(),
+                keys.len()
+            );
         } else {
             assert!(result.is_err());
             assert!(provider.take_all().unwrap().is_empty());
@@ -692,7 +726,7 @@ mod tests {
         use blockifier::execution::syscalls::committed_data::{
             read_values_shared, CommittedDataReadSet, CommittedDataWitnesses,
         };
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::sync::atomic::{AtomicBool, Ordering};
         const BLOCKS: usize = 10;
         const KEYS_PER_BLOCK: usize = 7000;
@@ -723,26 +757,20 @@ mod tests {
                     Err(error) => panic!("{error}"),
                 };
                 stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                let mut request = Vec::new();
-                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                    let mut buffer = [0; 4096];
-                    let count = stream.read(&mut buffer).unwrap();
-                    assert!(count > 0 && request.len() + count <= 128 * 1024);
-                    request.extend_from_slice(&buffer[..count]);
-                }
-                let request = std::str::from_utf8(&request).unwrap();
-                let url =
-                    reqwest::Url::parse(&format!("http://localhost{}", request.split_whitespace().nth(1).unwrap()))
-                        .unwrap();
-                let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
-                let root = Felt::from_hex(&query["root"]).unwrap();
-                let tree = &trees[&root];
-                let body = if let Some(keys) = query.get("keys") {
-                    let proofs: Vec<_> =
-                        keys.split(',').map(|key| tree.witness(Felt::from_hex(key).unwrap()).unwrap()).collect();
+                let (headers, body) = read_http_request(&mut stream);
+                let body = if headers.starts_with("POST ") {
+                    let query: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let root: Felt = serde_json::from_value(query["root"].clone()).unwrap();
+                    let keys: Vec<Felt> = serde_json::from_value(query["keys"].clone()).unwrap();
+                    let proofs: Vec<_> = keys.iter().map(|key| trees[&root].witness(*key).unwrap()).collect();
                     serde_json::to_vec(&proofs).unwrap()
                 } else {
-                    serde_json::to_vec(&tree.witness(Felt::from_hex(&query["key"]).unwrap())).unwrap()
+                    let url =
+                        reqwest::Url::parse(&format!("http://localhost{}", headers.split_whitespace().nth(1).unwrap()))
+                            .unwrap();
+                    let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+                    let root = Felt::from_hex(&query["root"]).unwrap();
+                    serde_json::to_vec(&trees[&root].witness(Felt::from_hex(&query["key"]).unwrap())).unwrap()
                 };
                 write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
                     .unwrap();
